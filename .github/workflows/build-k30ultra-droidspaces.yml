@@ -56,21 +56,27 @@ jobs:
 
           # Download AOSP Clang r416183b (Android 12, compatible with 4.14)
           echo "Downloading AOSP Clang r416183b..."
-          wget -q --show-progress             "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-12.1.0_r1/clang-r416183b.tar.gz"             -O clang-r416183b.tar.gz
+          wget -q --show-progress \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-12.1.0_r1/clang-r416183b.tar.gz" \
+            -O clang-r416183b.tar.gz
           mkdir -p clang
           tar -xzf clang-r416183b.tar.gz -C clang
           rm clang-r416183b.tar.gz
 
           # Download AOSP GCC aarch64-linux-android-4.9
           echo "Downloading AOSP GCC aarch64..."
-          wget -q --show-progress             "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz"             -O gcc-aarch64.tar.gz
+          wget -q --show-progress \
+            "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz" \
+            -O gcc-aarch64.tar.gz
           mkdir -p gcc-aarch64
           tar -xzf gcc-aarch64.tar.gz -C gcc-aarch64
           rm gcc-aarch64.tar.gz
 
           # Download AOSP GCC arm-linux-androideabi-4.9
           echo "Downloading AOSP GCC arm..."
-          wget -q --show-progress             "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz"             -O gcc-arm.tar.gz
+          wget -q --show-progress \
+            "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz" \
+            -O gcc-arm.tar.gz
           mkdir -p gcc-arm
           tar -xzf gcc-arm.tar.gz -C gcc-arm
           rm gcc-arm.tar.gz
@@ -82,8 +88,6 @@ jobs:
         run: |
           cd ${{ env.KERNEL_DIR }}
 
-          # Fix: static declaration of 'mt_get_uartlog_status' follows non-static declaration
-          # This happens when compiling with Clang on MTK 4.14 kernels
           MTK_PRINTK_H="drivers/misc/mediatek/include/mt-plat/mtk_printk_ctrl.h"
           if [ -f "$MTK_PRINTK_H" ]; then
             echo "Fixing mtk_printk_ctrl.h static declaration conflict..."
@@ -91,7 +95,6 @@ jobs:
             echo "Fixed: $(grep -n 'mt_get_uartlog_status' $MTK_PRINTK_H || echo 'pattern not found')"
           fi
 
-          # Also check printk.h for the extern declaration
           PRINTK_H="include/linux/printk.h"
           if [ -f "$PRINTK_H" ]; then
             echo "printk.h declaration: $(grep -n 'mt_get_uartlog_status' $PRINTK_H || echo 'not found')"
@@ -101,7 +104,6 @@ jobs:
         run: |
           cd ${{ env.KERNEL_DIR }}
 
-          # 根据选择的变体克隆 KernelSU
           if [ "${{ inputs.kernelsu_variant }}" == "kernelsu" ]; then
             git clone --depth=1 -b ${{ inputs.kernelsu_ref }} https://github.com/tiann/KernelSU.git KernelSU
           elif [ "${{ inputs.kernelsu_variant }}" == "kernelsu-next" ]; then
@@ -110,7 +112,6 @@ jobs:
             git clone --depth=1 -b ${{ inputs.kernelsu_ref }} https://github.com/ShirkN/SukiSU-Ultra.git KernelSU
           fi
 
-          # 运行 KernelSU 的 setup script
           if [ -f "KernelSU/kernel/setup.sh" ]; then
             bash KernelSU/kernel/setup.sh
           elif [ -f "KernelSU/setup.sh" ]; then
@@ -123,30 +124,24 @@ jobs:
         run: |
           cd ${{ env.KERNEL_DIR }}
 
-          # KernelSU 的 patch 可能在 4.14 上引入 nohz_flags / NOHZ_BALANCE_KICK 引用
-          # 但这些符号只在 CONFIG_NO_HZ_COMMON 启用时存在
-          # 如果 defconfig 没有启用，需要添加 fallback 定义
-
           SCHED_H="kernel/sched/sched.h"
           if grep -q "nohz_flags" kernel/sched/core.c 2>/dev/null; then
             echo "Found nohz_flags references in kernel/sched/core.c"
 
             if ! grep -q "nohz_flags" "$SCHED_H" 2>/dev/null; then
               echo "Adding nohz_flags stub to $SCHED_H..."
-              cat >> "$SCHED_H" << 'NOHZ_STUB'
-
-          /* Stub for nohz_flags when CONFIG_NO_HZ_COMMON is not set (4.14 compat) */
-          #ifndef CONFIG_NO_HZ_COMMON
-          DECLARE_PER_CPU(unsigned long, nohz_flags_stub);
-          static inline unsigned long *nohz_flags(int cpu)
-          {
-              return &per_cpu(nohz_flags_stub, cpu);
-          }
-          #define NOHZ_BALANCE_KICK 0
-          #define NOHZ_KICK_MASK    0
-          #define NOHZ_NEWILB_KICK  0
-          #endif
-NOHZ_STUB
+              echo "" >> "$SCHED_H"
+              echo "/* Stub for nohz_flags when CONFIG_NO_HZ_COMMON is not set (4.14 compat) */" >> "$SCHED_H"
+              echo "#ifndef CONFIG_NO_HZ_COMMON" >> "$SCHED_H"
+              echo "DECLARE_PER_CPU(unsigned long, nohz_flags_stub);" >> "$SCHED_H"
+              echo "static inline unsigned long *nohz_flags(int cpu)" >> "$SCHED_H"
+              echo "{" >> "$SCHED_H"
+              echo "    return &per_cpu(nohz_flags_stub, cpu);" >> "$SCHED_H"
+              echo "}" >> "$SCHED_H"
+              echo "#define NOHZ_BALANCE_KICK 0" >> "$SCHED_H"
+              echo "#define NOHZ_KICK_MASK    0" >> "$SCHED_H"
+              echo "#define NOHZ_NEWILB_KICK  0" >> "$SCHED_H"
+              echo "#endif" >> "$SCHED_H"
             fi
           fi
 
@@ -154,55 +149,51 @@ NOHZ_STUB
         run: |
           cd ${{ env.KERNEL_DIR }}
 
-          # 检查 fs/namespace.c 是否已有 path_umount
           if ! grep -q "path_umount" fs/namespace.c; then
             echo "Backporting path_umount for 4.14 kernel..."
 
-            # 创建 patch 文件
-            cat > path_umount.patch << 'PATCH_EOF'
-          --- a/fs/namespace.c
-          +++ b/fs/namespace.c
-          @@ -1739,6 +1739,39 @@ static inline bool may_mandlock(void)
-           }
-           #endif
-
-          +static int can_umount(const struct path *path, int flags)
-          +{
-          +	struct mount *mnt = real_mount(path->mnt);
-          +
-          +	if (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))
-          +		return -EINVAL;
-          +	if (!may_mount())
-          +		return -EPERM;
-          +	if (path->dentry != path->mnt->mnt_root)
-          +		return -EINVAL;
-          +	if (!check_mnt(mnt))
-          +		return -EINVAL;
-          +	if (mnt->mnt.mnt_flags & MNT_LOCKED) /* Check optimistically */
-          +		return -EINVAL;
-          +	if (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))
-          +		return -EPERM;
-          +	return 0;
-          +}
-          +
-          +int path_umount(struct path *path, int flags)
-          +{
-          +	struct mount *mnt = real_mount(path->mnt);
-          +	int ret;
-          +
-          +	ret = can_umount(path, flags);
-          +	if (!ret)
-          +		ret = do_umount(mnt, flags);
-          +
-          +	/* we mustn't call path_put() as that would clear mnt_expiry_mark */
-          +	dput(path->dentry);
-          +	mntput_no_expire(mnt);
-          +	return ret;
-          +}
-           /*
-            * Now umount can handle mount points as well as block devices.
-            * This is important for filesystems which use unnamed block devices.
-          PATCH_EOF
+            echo "--- a/fs/namespace.c" > path_umount.patch
+            echo "+++ b/fs/namespace.c" >> path_umount.patch
+            echo "@@ -1739,6 +1739,39 @@ static inline bool may_mandlock(void)" >> path_umount.patch
+            echo " }" >> path_umount.patch
+            echo " #endif" >> path_umount.patch
+            echo "" >> path_umount.patch
+            echo "+static int can_umount(const struct path *path, int flags)" >> path_umount.patch
+            echo "+{" >> path_umount.patch
+            echo "+\tstruct mount *mnt = real_mount(path->mnt);" >> path_umount.patch
+            echo "+" >> path_umount.patch
+            echo "+\tif (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))" >> path_umount.patch
+            echo "+\t\treturn -EINVAL;" >> path_umount.patch
+            echo "+\tif (!may_mount())" >> path_umount.patch
+            echo "+\t\treturn -EPERM;" >> path_umount.patch
+            echo "+\tif (path->dentry != path->mnt->mnt_root)" >> path_umount.patch
+            echo "+\t\treturn -EINVAL;" >> path_umount.patch
+            echo "+\tif (!check_mnt(mnt))" >> path_umount.patch
+            echo "+\t\treturn -EINVAL;" >> path_umount.patch
+            echo "+\tif (mnt->mnt.mnt_flags & MNT_LOCKED) /* Check optimistically */" >> path_umount.patch
+            echo "+\t\treturn -EINVAL;" >> path_umount.patch
+            echo "+\tif (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))" >> path_umount.patch
+            echo "+\t\treturn -EPERM;" >> path_umount.patch
+            echo "+\treturn 0;" >> path_umount.patch
+            echo "+}" >> path_umount.patch
+            echo "+" >> path_umount.patch
+            echo "+int path_umount(struct path *path, int flags)" >> path_umount.patch
+            echo "+{" >> path_umount.patch
+            echo "+\tstruct mount *mnt = real_mount(path->mnt);" >> path_umount.patch
+            echo "+\tint ret;" >> path_umount.patch
+            echo "+" >> path_umount.patch
+            echo "+\tret = can_umount(path, flags);" >> path_umount.patch
+            echo "+\tif (!ret)" >> path_umount.patch
+            echo "+\t\tret = do_umount(mnt, flags);" >> path_umount.patch
+            echo "+" >> path_umount.patch
+            echo "+\t/* we mustn't call path_put() as that would clear mnt_expiry_mark */" >> path_umount.patch
+            echo "+\tdput(path->dentry);" >> path_umount.patch
+            echo "+\tmntput_no_expire(mnt);" >> path_umount.patch
+            echo "+\treturn ret;" >> path_umount.patch
+            echo "+}" >> path_umount.patch
+            echo " /*" >> path_umount.patch
+            echo "  * Now umount can handle mount points as well as block devices." >> path_umount.patch
+            echo "  * This is important for filesystems which use unnamed block devices." >> path_umount.patch
 
             patch -p1 < path_umount.patch || echo "Patch may already be applied or failed, continuing..."
           else
@@ -213,13 +204,11 @@ NOHZ_STUB
         run: |
           cd ${{ env.KERNEL_DIR }}
 
-          # 创建 DroidSpaces 配置片段
           cat > droidspaces.config << 'EOF'
           # ============================================================
           # DroidSpaces Kernel Configuration for Non-GKI (Legacy) Kernels
           # Device: Redmi K30 Ultra (cezanne)
           # Kernel: 4.14
-          # Source: https://github.com/ravindu644/Droidspaces-OSS
           # ============================================================
 
           # NO_HZ support (required for KernelSU on 4.14)
@@ -316,7 +305,6 @@ NOHZ_STUB
           CONFIG_MODULES=y
           EOF
 
-          # 合并配置到 defconfig
           cat droidspaces.config >> arch/arm64/configs/${{ env.KERNEL_CONFIG }}
           echo "DroidSpaces config applied to ${{ env.KERNEL_CONFIG }}"
 
@@ -326,11 +314,14 @@ NOHZ_STUB
 
           export PATH="${{ env.TOOLCHAIN_DIR }}/clang/bin:${{ env.TOOLCHAIN_DIR }}/gcc-aarch64/bin:${{ env.TOOLCHAIN_DIR }}/gcc-arm/bin:$PATH"
 
-          # 生成 .config
           make O=out ARCH=${{ env.ARCH }} ${{ env.KERNEL_CONFIG }}
 
-          # 编译内核
-          make O=out ARCH=${{ env.ARCH }}             CC=clang             CLANG_TRIPLE=aarch64-linux-gnu-             CROSS_COMPILE=aarch64-linux-android-             CROSS_COMPILE_ARM32=arm-linux-androideabi-             -j$(nproc)
+          make O=out ARCH=${{ env.ARCH }} \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            -j$(nproc)
 
       - name: Clone AnyKernel3
         run: |
@@ -340,21 +331,17 @@ NOHZ_STUB
         run: |
           cd anykernel
 
-          # 复制编译好的内核镜像
           cp ${{ env.KERNEL_DIR }}/out/arch/arm64/boot/${{ env.IMAGE_NAME }} .
 
-          # 更新 AnyKernel3 的 device 信息
           sed -i 's/do.devicecheck=1/do.devicecheck=1/' anykernel.sh
           sed -i 's/device.name1=.*/device.name1=cezanne/' anykernel.sh
           sed -i 's/device.name2=.*/device.name2=cezanne/' anykernel.sh
 
-          # 确保 device check 正确
           if ! grep -q "device.name1=cezanne" anykernel.sh; then
             echo "device.name1=cezanne" >> anykernel.sh
             echo "device.name2=cezanne" >> anykernel.sh
           fi
 
-          # 打包为 zip
           zip -r9 K30Ultra-DroidSpaces-KernelSU.zip * -x .git -x README.md -x LICENSE
 
       - name: Upload Build Artifact
