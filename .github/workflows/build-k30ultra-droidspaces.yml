@@ -117,6 +117,45 @@ jobs:
 
           echo "KernelSU setup completed"
 
+      - name: Generate SELinux headers (flask.h / av_permissions.h)
+        run: |
+          cd ${{ env.KERNEL_DIR }}
+
+          # Check if flask.h already exists
+          if [ -f "security/selinux/include/flask.h" ] && [ -f "security/selinux/include/av_permissions.h" ]; then
+            echo "SELinux headers already exist, skipping generation"
+            exit 0
+          fi
+
+          echo "Generating SELinux headers..."
+          mkdir -p security/selinux/include
+
+          # Method 1: Use pre-built genheaders if available
+          if [ -x "scripts/selinux/genheaders/genheaders" ]; then
+            echo "Using pre-built genheaders..."
+            scripts/selinux/genheaders/genheaders security/selinux/include/flask.h security/selinux/include/av_permissions.h
+          # Method 2: Build genheaders from source
+          elif [ -f "scripts/selinux/genheaders/genheaders.c" ]; then
+            echo "Building genheaders from source..."
+            gcc -I. scripts/selinux/genheaders/genheaders.c -o /tmp/genheaders
+            /tmp/genheaders security/selinux/include/flask.h security/selinux/include/av_permissions.h
+          fi
+
+          # Verify
+          if [ -f "security/selinux/include/flask.h" ]; then
+            echo "flask.h generated successfully"
+          else
+            echo "ERROR: flask.h generation failed"
+            exit 1
+          fi
+
+          if [ -f "security/selinux/include/av_permissions.h" ]; then
+            echo "av_permissions.h generated successfully"
+          else
+            echo "ERROR: av_permissions.h generation failed"
+            exit 1
+          fi
+
       - name: Backport path_umount for KernelSU (4.14 required)
         run: |
           cd ${{ env.KERNEL_DIR }}
