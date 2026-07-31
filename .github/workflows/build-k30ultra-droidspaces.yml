@@ -78,6 +78,25 @@ jobs:
           echo "TOOLCHAIN_DIR=$(pwd)" >> $GITHUB_ENV
           echo "Toolchains downloaded successfully!"
 
+      - name: Fix MTK printk header conflict (Clang compatibility)
+        run: |
+          cd ${{ env.KERNEL_DIR }}
+
+          # Fix: static declaration of 'mt_get_uartlog_status' follows non-static declaration
+          # This happens when compiling with Clang on MTK 4.14 kernels
+          MTK_PRINTK_H="drivers/misc/mediatek/include/mt-plat/mtk_printk_ctrl.h"
+          if [ -f "$MTK_PRINTK_H" ]; then
+            echo "Fixing mtk_printk_ctrl.h static declaration conflict..."
+            sed -i 's/static inline bool mt_get_uartlog_status/inline bool mt_get_uartlog_status/' "$MTK_PRINTK_H"
+            echo "Fixed: $(grep -n 'mt_get_uartlog_status' $MTK_PRINTK_H || echo 'pattern not found')"
+          fi
+
+          # Also check printk.h for the extern declaration
+          PRINTK_H="include/linux/printk.h"
+          if [ -f "$PRINTK_H" ]; then
+            echo "printk.h declaration: $(grep -n 'mt_get_uartlog_status' $PRINTK_H || echo 'not found')"
+          fi
+
       - name: Setup KernelSU (Non-GKI / kprobe mode)
         run: |
           cd ${{ env.KERNEL_DIR }}
