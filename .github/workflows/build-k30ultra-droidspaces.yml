@@ -121,36 +121,38 @@ jobs:
         run: |
           cd ${{ env.KERNEL_DIR }}
 
+          # cezanne-r-oss is missing SELinux generated headers.
+          # Xiaomi backported newer SELinux code to 4.14 but did not include
+          # the pre-generated flask.h/av_permissions.h in the source release.
+          # We download compatible versions from Linux 5.4 LTS which has the
+          # same SELinux class definitions plus SECINITSID_NUM and other
+          # macros needed by the backported sidtab code.
+
           mkdir -p security/selinux/include
 
-          # cezanne-r-oss is missing SELinux static headers.
-          # Download them from upstream Linux 4.14 stable.
-          UPSTREAM_BASE="https://raw.githubusercontent.com/torvalds/linux/v4.14/security/selinux/include"
+          UPSTREAM_BASE="https://raw.githubusercontent.com/torvalds/linux/v5.4/security/selinux/include"
 
-          for f in classmap.h initial_sid_to_string.h; do
+          for f in classmap.h initial_sid_to_string.h flask.h av_permissions.h; do
             if [ ! -f "security/selinux/include/$f" ]; then
-              echo "Downloading missing $f from upstream Linux 4.14..."
+              echo "Downloading $f from Linux 5.4 LTS..."
               wget -q "$UPSTREAM_BASE/$f" -O "security/selinux/include/$f" || echo "WARNING: failed to download $f"
             else
               echo "$f already exists"
             fi
           done
 
-          # Also download pre-generated flask.h and av_permissions.h.
-          # Compiling genheaders on host fails due to kernel/glibc header conflicts
-          # (classmap.h includes linux/capability.h and linux/socket.h which conflict
-          # with glibc sys/types.h on x86_64 host).
+          # Also place copies in security/selinux/ where the kernel Makefile
+          # normally generates them, in case any code looks there.
           for f in flask.h av_permissions.h; do
-            if [ ! -f "security/selinux/include/$f" ]; then
-              echo "Downloading pre-generated $f from upstream Linux 4.14..."
-              wget -q "$UPSTREAM_BASE/$f" -O "security/selinux/include/$f" || echo "WARNING: failed to download $f"
-            else
-              echo "$f already exists"
+            if [ -f "security/selinux/include/$f" ] && [ ! -f "security/selinux/$f" ]; then
+              cp "security/selinux/include/$f" "security/selinux/$f"
             fi
           done
 
           echo "SELinux include directory contents:"
           ls -la security/selinux/include/ || true
+          echo "SELinux directory contents:"
+          ls -la security/selinux/*.h 2>/dev/null || true
 
       - name: Backport path_umount for KernelSU (4.14 required)
         run: |
@@ -179,6 +181,10 @@ jobs:
           # CONFIG_HZ_PERIODIC is not set
           CONFIG_NO_HZ_IDLE=y
           CONFIG_NO_HZ_COMMON=y
+
+          # SELinux sidtab hash table (backported in cezanne-r-oss)
+          CONFIG_SECURITY_SELINUX_SIDTAB_HASH_BITS=9
+          CONFIG_SECURITY_SELINUX_SID2STR_CACHE_SIZE=256
 
           # IPC mechanisms
           CONFIG_SYSCTL=y
