@@ -117,13 +117,13 @@ jobs:
 
           echo "KernelSU setup completed"
 
-      - name: Fix missing SELinux headers (classmap.h etc.)
+      - name: Fix missing SELinux headers
         run: |
           cd ${{ env.KERNEL_DIR }}
 
           mkdir -p security/selinux/include
 
-          # cezanne-r-oss is missing some SELinux static headers.
+          # cezanne-r-oss is missing SELinux static headers.
           # Download them from upstream Linux 4.14 stable.
           UPSTREAM_BASE="https://raw.githubusercontent.com/torvalds/linux/v4.14/security/selinux/include"
 
@@ -136,36 +136,21 @@ jobs:
             fi
           done
 
-          # List what we have
+          # Also download pre-generated flask.h and av_permissions.h.
+          # Compiling genheaders on host fails due to kernel/glibc header conflicts
+          # (classmap.h includes linux/capability.h and linux/socket.h which conflict
+          # with glibc sys/types.h on x86_64 host).
+          for f in flask.h av_permissions.h; do
+            if [ ! -f "security/selinux/include/$f" ]; then
+              echo "Downloading pre-generated $f from upstream Linux 4.14..."
+              wget -q "$UPSTREAM_BASE/$f" -O "security/selinux/include/$f" || echo "WARNING: failed to download $f"
+            else
+              echo "$f already exists"
+            fi
+          done
+
           echo "SELinux include directory contents:"
           ls -la security/selinux/include/ || true
-
-      - name: Generate SELinux auto-headers (flask.h / av_permissions.h)
-        run: |
-          cd ${{ env.KERNEL_DIR }}
-
-          # Build genheaders host tool
-          if [ -f "scripts/selinux/genheaders/genheaders.c" ]; then
-            echo "Building genheaders..."
-            gcc -I. -Iinclude -Isecurity/selinux/include               scripts/selinux/genheaders/genheaders.c               -o /tmp/genheaders
-
-            echo "Generating flask.h and av_permissions.h..."
-            mkdir -p security/selinux/include
-            /tmp/genheaders security/selinux/include/flask.h security/selinux/include/av_permissions.h
-          fi
-
-          # Verify
-          if [ -f "security/selinux/include/flask.h" ]; then
-            echo "flask.h generated successfully"
-          else
-            echo "WARNING: flask.h not generated"
-          fi
-
-          if [ -f "security/selinux/include/av_permissions.h" ]; then
-            echo "av_permissions.h generated successfully"
-          else
-            echo "WARNING: av_permissions.h not generated"
-          fi
 
       - name: Backport path_umount for KernelSU (4.14 required)
         run: |
