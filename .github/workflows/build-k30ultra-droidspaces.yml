@@ -119,6 +119,37 @@ jobs:
 
           echo "KernelSU setup completed"
 
+      - name: Fix nohz_flags / NOHZ_BALANCE_KICK for 4.14
+        run: |
+          cd ${{ env.KERNEL_DIR }}
+
+          # KernelSU 的 patch 可能在 4.14 上引入 nohz_flags / NOHZ_BALANCE_KICK 引用
+          # 但这些符号只在 CONFIG_NO_HZ_COMMON 启用时存在
+          # 如果 defconfig 没有启用，需要添加 fallback 定义
+
+          SCHED_H="kernel/sched/sched.h"
+          if grep -q "nohz_flags" kernel/sched/core.c 2>/dev/null; then
+            echo "Found nohz_flags references in kernel/sched/core.c"
+
+            if ! grep -q "nohz_flags" "$SCHED_H" 2>/dev/null; then
+              echo "Adding nohz_flags stub to $SCHED_H..."
+              cat >> "$SCHED_H" << 'NOHZ_STUB'
+
+          /* Stub for nohz_flags when CONFIG_NO_HZ_COMMON is not set (4.14 compat) */
+          #ifndef CONFIG_NO_HZ_COMMON
+          DECLARE_PER_CPU(unsigned long, nohz_flags_stub);
+          static inline unsigned long *nohz_flags(int cpu)
+          {
+              return &per_cpu(nohz_flags_stub, cpu);
+          }
+          #define NOHZ_BALANCE_KICK 0
+          #define NOHZ_KICK_MASK    0
+          #define NOHZ_NEWILB_KICK  0
+          #endif
+NOHZ_STUB
+            fi
+          fi
+
       - name: Backport path_umount for KernelSU (4.14 required)
         run: |
           cd ${{ env.KERNEL_DIR }}
@@ -190,6 +221,11 @@ jobs:
           # Kernel: 4.14
           # Source: https://github.com/ravindu644/Droidspaces-OSS
           # ============================================================
+
+          # NO_HZ support (required for KernelSU on 4.14)
+          # CONFIG_HZ_PERIODIC is not set
+          CONFIG_NO_HZ_IDLE=y
+          CONFIG_NO_HZ_COMMON=y
 
           # IPC mechanisms
           CONFIG_SYSCTL=y
