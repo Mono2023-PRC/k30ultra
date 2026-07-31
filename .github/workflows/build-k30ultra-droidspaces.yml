@@ -49,21 +49,34 @@ jobs:
           cd kernel
           echo "KERNEL_DIR=$(pwd)" >> $GITHUB_ENV
 
-      - name: Setup Toolchain
+      - name: Download Toolchains
         run: |
           mkdir -p toolchain
           cd toolchain
 
-          # Clone AOSP Clang (r416183b for Android 12 / compatible with 4.14)
-          git clone --depth=1 -b android12-release https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/clang-r416183b clang
+          # Download AOSP Clang r416183b (Android 12, compatible with 4.14)
+          echo "Downloading AOSP Clang r416183b..."
+          wget -q --show-progress             "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-12.1.0_r1/clang-r416183b.tar.gz"             -O clang-r416183b.tar.gz
+          mkdir -p clang
+          tar -xzf clang-r416183b.tar.gz -C clang
+          rm clang-r416183b.tar.gz
 
-          # Clone AOSP GCC for aarch64
-          git clone --depth=1 -b android12-release https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc-aarch64
+          # Download AOSP GCC aarch64-linux-android-4.9
+          echo "Downloading AOSP GCC aarch64..."
+          wget -q --show-progress             "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz"             -O gcc-aarch64.tar.gz
+          mkdir -p gcc-aarch64
+          tar -xzf gcc-aarch64.tar.gz -C gcc-aarch64
+          rm gcc-aarch64.tar.gz
 
-          # Clone AOSP GCC for arm
-          git clone --depth=1 -b android12-release https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 gcc-arm
+          # Download AOSP GCC arm-linux-androideabi-4.9
+          echo "Downloading AOSP GCC arm..."
+          wget -q --show-progress             "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz"             -O gcc-arm.tar.gz
+          mkdir -p gcc-arm
+          tar -xzf gcc-arm.tar.gz -C gcc-arm
+          rm gcc-arm.tar.gz
 
           echo "TOOLCHAIN_DIR=$(pwd)" >> $GITHUB_ENV
+          echo "Toolchains downloaded successfully!"
 
       - name: Setup KernelSU (Non-GKI / kprobe mode)
         run: |
@@ -105,36 +118,36 @@ jobs:
 
           +static int can_umount(const struct path *path, int flags)
           +{
-          +	struct mount *mnt = real_mount(path->mnt);
+          + struct mount *mnt = real_mount(path->mnt);
           +
-          +	if (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))
-          +		return -EINVAL;
-          +	if (!may_mount())
-          +		return -EPERM;
-          +	if (path->dentry != path->mnt->mnt_root)
-          +		return -EINVAL;
-          +	if (!check_mnt(mnt))
-          +		return -EINVAL;
-          +	if (mnt->mnt.mnt_flags & MNT_LOCKED) /* Check optimistically */
-          +		return -EINVAL;
-          +	if (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))
-          +		return -EPERM;
-          +	return 0;
+          + if (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))
+          +   return -EINVAL;
+          + if (!may_mount())
+          +   return -EPERM;
+          + if (path->dentry != path->mnt->mnt_root)
+          +   return -EINVAL;
+          + if (!check_mnt(mnt))
+          +   return -EINVAL;
+          + if (mnt->mnt.mnt_flags & MNT_LOCKED) /* Check optimistically */
+          +   return -EINVAL;
+          + if (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))
+          +   return -EPERM;
+          + return 0;
           +}
           +
           +int path_umount(struct path *path, int flags)
           +{
-          +	struct mount *mnt = real_mount(path->mnt);
-          +	int ret;
+          + struct mount *mnt = real_mount(path->mnt);
+          + int ret;
           +
-          +	ret = can_umount(path, flags);
-          +	if (!ret)
-          +		ret = do_umount(mnt, flags);
+          + ret = can_umount(path, flags);
+          + if (!ret)
+          +   ret = do_umount(mnt, flags);
           +
-          +	/* we mustn't call path_put() as that would clear mnt_expiry_mark */
-          +	dput(path->dentry);
-          +	mntput_no_expire(mnt);
-          +	return ret;
+          + /* we mustn't call path_put() as that would clear mnt_expiry_mark */
+          + dput(path->dentry);
+          + mntput_no_expire(mnt);
+          + return ret;
           +}
            /*
             * Now umount can handle mount points as well as block devices.
