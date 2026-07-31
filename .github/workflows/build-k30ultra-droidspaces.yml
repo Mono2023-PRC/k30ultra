@@ -54,7 +54,6 @@ jobs:
           mkdir -p toolchain
           cd toolchain
 
-          # Download AOSP Clang r416183b (Android 12, compatible with 4.14)
           echo "Downloading AOSP Clang r416183b..."
           wget -q --show-progress \
             "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-12.1.0_r1/clang-r416183b.tar.gz" \
@@ -63,7 +62,6 @@ jobs:
           tar -xzf clang-r416183b.tar.gz -C clang
           rm clang-r416183b.tar.gz
 
-          # Download AOSP GCC aarch64-linux-android-4.9
           echo "Downloading AOSP GCC aarch64..."
           wget -q --show-progress \
             "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz" \
@@ -72,7 +70,6 @@ jobs:
           tar -xzf gcc-aarch64.tar.gz -C gcc-aarch64
           rm gcc-aarch64.tar.gz
 
-          # Download AOSP GCC arm-linux-androideabi-4.9
           echo "Downloading AOSP GCC arm..."
           wget -q --show-progress \
             "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz" \
@@ -120,31 +117,6 @@ jobs:
 
           echo "KernelSU setup completed"
 
-      - name: Fix nohz_flags / NOHZ_BALANCE_KICK for 4.14
-        run: |
-          cd ${{ env.KERNEL_DIR }}
-
-          SCHED_H="kernel/sched/sched.h"
-          if grep -q "nohz_flags" kernel/sched/core.c 2>/dev/null; then
-            echo "Found nohz_flags references in kernel/sched/core.c"
-
-            if ! grep -q "nohz_flags" "$SCHED_H" 2>/dev/null; then
-              echo "Adding nohz_flags stub to $SCHED_H..."
-              echo "" >> "$SCHED_H"
-              echo "/* Stub for nohz_flags when CONFIG_NO_HZ_COMMON is not set (4.14 compat) */" >> "$SCHED_H"
-              echo "#ifndef CONFIG_NO_HZ_COMMON" >> "$SCHED_H"
-              echo "DECLARE_PER_CPU(unsigned long, nohz_flags_stub);" >> "$SCHED_H"
-              echo "static inline unsigned long *nohz_flags(int cpu)" >> "$SCHED_H"
-              echo "{" >> "$SCHED_H"
-              echo "    return &per_cpu(nohz_flags_stub, cpu);" >> "$SCHED_H"
-              echo "}" >> "$SCHED_H"
-              echo "#define NOHZ_BALANCE_KICK 0" >> "$SCHED_H"
-              echo "#define NOHZ_KICK_MASK    0" >> "$SCHED_H"
-              echo "#define NOHZ_NEWILB_KICK  0" >> "$SCHED_H"
-              echo "#endif" >> "$SCHED_H"
-            fi
-          fi
-
       - name: Backport path_umount for KernelSU (4.14 required)
         run: |
           cd ${{ env.KERNEL_DIR }}
@@ -152,50 +124,7 @@ jobs:
           if ! grep -q "path_umount" fs/namespace.c; then
             echo "Backporting path_umount for 4.14 kernel..."
 
-            echo "--- a/fs/namespace.c" > path_umount.patch
-            echo "+++ b/fs/namespace.c" >> path_umount.patch
-            echo "@@ -1739,6 +1739,39 @@ static inline bool may_mandlock(void)" >> path_umount.patch
-            echo " }" >> path_umount.patch
-            echo " #endif" >> path_umount.patch
-            echo "" >> path_umount.patch
-            echo "+static int can_umount(const struct path *path, int flags)" >> path_umount.patch
-            echo "+{" >> path_umount.patch
-            echo "+\tstruct mount *mnt = real_mount(path->mnt);" >> path_umount.patch
-            echo "+" >> path_umount.patch
-            echo "+\tif (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))" >> path_umount.patch
-            echo "+\t\treturn -EINVAL;" >> path_umount.patch
-            echo "+\tif (!may_mount())" >> path_umount.patch
-            echo "+\t\treturn -EPERM;" >> path_umount.patch
-            echo "+\tif (path->dentry != path->mnt->mnt_root)" >> path_umount.patch
-            echo "+\t\treturn -EINVAL;" >> path_umount.patch
-            echo "+\tif (!check_mnt(mnt))" >> path_umount.patch
-            echo "+\t\treturn -EINVAL;" >> path_umount.patch
-            echo "+\tif (mnt->mnt.mnt_flags & MNT_LOCKED) /* Check optimistically */" >> path_umount.patch
-            echo "+\t\treturn -EINVAL;" >> path_umount.patch
-            echo "+\tif (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))" >> path_umount.patch
-            echo "+\t\treturn -EPERM;" >> path_umount.patch
-            echo "+\treturn 0;" >> path_umount.patch
-            echo "+}" >> path_umount.patch
-            echo "+" >> path_umount.patch
-            echo "+int path_umount(struct path *path, int flags)" >> path_umount.patch
-            echo "+{" >> path_umount.patch
-            echo "+\tstruct mount *mnt = real_mount(path->mnt);" >> path_umount.patch
-            echo "+\tint ret;" >> path_umount.patch
-            echo "+" >> path_umount.patch
-            echo "+\tret = can_umount(path, flags);" >> path_umount.patch
-            echo "+\tif (!ret)" >> path_umount.patch
-            echo "+\t\tret = do_umount(mnt, flags);" >> path_umount.patch
-            echo "+" >> path_umount.patch
-            echo "+\t/* we mustn't call path_put() as that would clear mnt_expiry_mark */" >> path_umount.patch
-            echo "+\tdput(path->dentry);" >> path_umount.patch
-            echo "+\tmntput_no_expire(mnt);" >> path_umount.patch
-            echo "+\treturn ret;" >> path_umount.patch
-            echo "+}" >> path_umount.patch
-            echo " /*" >> path_umount.patch
-            echo "  * Now umount can handle mount points as well as block devices." >> path_umount.patch
-            echo "  * This is important for filesystems which use unnamed block devices." >> path_umount.patch
-
-            patch -p1 < path_umount.patch || echo "Patch may already be applied or failed, continuing..."
+            python3 -c "import sys; lines = open('fs/namespace.c').readlines(); idx = next((i for i, l in enumerate(lines) if 'SYSCALL_DEFINE2(umount' in l), None); exit(1) if idx is None else None; code = 'static int can_umount(const struct path *path, int flags)\n{\n\tstruct mount *mnt = real_mount(path->mnt);\n\n\tif (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))\n\t\treturn -EINVAL;\n\tif (!may_mount())\n\t\treturn -EPERM;\n\tif (path->dentry != path->mnt->mnt_root)\n\t\treturn -EINVAL;\n\tif (!check_mnt(mnt))\n\t\treturn -EINVAL;\n\tif (mnt->mnt.mnt_flags & MNT_LOCKED)\n\t\treturn -EINVAL;\n\tif (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))\n\t\treturn -EPERM;\n\treturn 0;\n}\n\nint path_umount(struct path *path, int flags)\n{\n\tstruct mount *mnt = real_mount(path->mnt);\n\tint ret;\n\n\tret = can_umount(path, flags);\n\tif (!ret)\n\t\tret = do_umount(mnt, flags);\n\n\t/* we must not call path_put() as that would clear mnt_expiry_mark */\n\tdput(path->dentry);\n\tmntput_no_expire(mnt);\n\treturn ret;\n}\n\n'; lines.insert(idx, code); open('fs/namespace.c', 'w').writelines(lines); print('path_umount backported successfully')"
           else
             echo "path_umount already exists, skipping backport"
           fi
