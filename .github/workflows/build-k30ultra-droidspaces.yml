@@ -154,6 +154,56 @@ jobs:
           echo "SELinux directory contents:"
           ls -la security/selinux/*.h 2>/dev/null || true
 
+      - name: Fix backported SELinux sidtab for 4.14
+        run: |
+          cd ${{ env.KERNEL_DIR }}
+
+          # Xiaomi backported sidtab hash table code from 5.x to 4.14 but
+          # the backported sidtab.h references SECINITSID_NUM (from flask.h)
+          # and CONFIG_SECURITY_SELINUX_SIDTAB_HASH_BITS (a 5.6+ Kconfig option).
+          # Both are missing in 4.14. We fix them here.
+
+          python3 << 'PYEOF'
+          import re
+
+          # 1. Compute SECINITSID_NUM from initial_sid_to_string.h
+          with open('security/selinux/include/initial_sid_to_string.h', 'r') as f:
+              content = f.read()
+
+          # Count quoted strings in the array
+          entries = re.findall(r'"[^"]+"', content)
+          secinitsid_num = len(entries)
+          print(f"Computed SECINITSID_NUM = {secinitsid_num}")
+
+          # Append to flask.h
+          with open('security/selinux/include/flask.h', 'a') as f:
+              f.write(f"
+#define SECINITSID_NUM {secinitsid_num}
+")
+
+          # Also append to security/selinux/flask.h if it exists
+          import os
+          if os.path.exists('security/selinux/flask.h'):
+              with open('security/selinux/flask.h', 'a') as f:
+                  f.write(f"
+#define SECINITSID_NUM {secinitsid_num}
+")
+
+          # 2. Fix sidtab.h - replace Kconfig-dependent macro with literal
+          with open('security/selinux/ss/sidtab.h', 'r') as f:
+              content = f.read()
+
+          content = content.replace(
+              '#define SIDTAB_HASH_BITS CONFIG_SECURITY_SELINUX_SIDTAB_HASH_BITS',
+              '#define SIDTAB_HASH_BITS 9'
+          )
+
+          with open('security/selinux/ss/sidtab.h', 'w') as f:
+              f.write(content)
+
+          print("Fixed sidtab.h: SIDTAB_HASH_BITS = 9")
+          PYEOF
+
       - name: Backport path_umount for KernelSU (4.14 required)
         run: |
           cd ${{ env.KERNEL_DIR }}
