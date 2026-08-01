@@ -13,9 +13,9 @@ on:
           - kernelsu
           - sukisu-ultra
       kernelsu_ref:
-        description: KernelSU branch, tag, or commit; use legacy for KernelSU Next v3.0.0 legacy manager
+        description: KernelSU branch, tag, or commit; default pins the v3.0.0 legacy manager generation
         required: true
-        default: legacy
+        default: v3.0.0
         type: string
       enable_susfs:
         description: Enable SUSFS patches (not recommended for DroidSpaces)
@@ -72,12 +72,33 @@ jobs:
           set -euo pipefail
           mkdir -p "${DOWNLOAD_CACHE_DIR}" kernel
           kernel_tar="${DOWNLOAD_CACHE_DIR}/xiaomi-${KERNEL_BRANCH}.tar.gz"
+          kernel_url="https://github.com/MiCode/Xiaomi_Kernel_OpenSource/archive/refs/heads/${KERNEL_BRANCH}.tar.gz"
+
+          download_if_missing() {
+            local url="$1"
+            local dest="$2"
+            local tmp="${dest}.tmp"
+
+            if [ -s "${dest}" ]; then
+              echo "Using cached archive: ${dest}"
+              return
+            fi
+
+            rm -f "${tmp}"
+            wget --tries=5 --waitretry=10 -qO "${tmp}" "${url}"
+            test -s "${tmp}"
+            mv "${tmp}" "${dest}"
+          }
 
           if [ ! -s "${kernel_tar}" ]; then
-            wget -qO "${kernel_tar}" \
-              "https://github.com/MiCode/Xiaomi_Kernel_OpenSource/archive/refs/heads/${KERNEL_BRANCH}.tar.gz"
+            download_if_missing "${kernel_url}" "${kernel_tar}"
           else
             echo "Using cached kernel source archive: ${kernel_tar}"
+          fi
+          if ! tar -tf "${kernel_tar}" >/dev/null; then
+            echo "Cached kernel source archive is broken; re-downloading."
+            rm -f "${kernel_tar}"
+            download_if_missing "${kernel_url}" "${kernel_tar}"
           fi
 
           rm -rf kernel
@@ -92,26 +113,58 @@ jobs:
           clang_tar="${DOWNLOAD_CACHE_DIR}/${CLANG_VERSION}.tar.gz"
           aarch64_gcc_tar="${DOWNLOAD_CACHE_DIR}/aarch64-linux-android-4.9-android12-release.tar.gz"
           arm_gcc_tar="${DOWNLOAD_CACHE_DIR}/arm-linux-androideabi-4.9-android12-release.tar.gz"
+          clang_url="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/${CLANG_VERSION}.tar.gz"
+          aarch64_gcc_url="https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/android12-release.tar.gz"
+          arm_gcc_url="https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/android12-release.tar.gz"
+
+          download_if_missing() {
+            local url="$1"
+            local dest="$2"
+            local tmp="${dest}.tmp"
+
+            if [ -s "${dest}" ]; then
+              echo "Using cached archive: ${dest}"
+              return
+            fi
+
+            rm -f "${tmp}"
+            wget --tries=5 --waitretry=10 -qO "${tmp}" "${url}"
+            test -s "${tmp}"
+            mv "${tmp}" "${dest}"
+          }
 
           if [ ! -s "${clang_tar}" ]; then
-            wget -qO "${clang_tar}" \
-              "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/${CLANG_VERSION}.tar.gz"
+            download_if_missing "${clang_url}" "${clang_tar}"
           else
             echo "Using cached clang archive: ${clang_tar}"
           fi
 
           if [ ! -s "${aarch64_gcc_tar}" ]; then
-            wget -qO "${aarch64_gcc_tar}" \
-              "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/android12-release.tar.gz"
+            download_if_missing "${aarch64_gcc_url}" "${aarch64_gcc_tar}"
           else
             echo "Using cached aarch64 GCC archive: ${aarch64_gcc_tar}"
           fi
 
           if [ ! -s "${arm_gcc_tar}" ]; then
-            wget -qO "${arm_gcc_tar}" \
-              "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/android12-release.tar.gz"
+            download_if_missing "${arm_gcc_url}" "${arm_gcc_tar}"
           else
             echo "Using cached arm GCC archive: ${arm_gcc_tar}"
+          fi
+
+          if ! tar -tf "${clang_tar}" >/dev/null; then
+            echo "Cached clang archive is broken; re-downloading."
+            rm -f "${clang_tar}"
+            download_if_missing "${clang_url}" "${clang_tar}"
+          fi
+          if ! tar -tf "${aarch64_gcc_tar}" >/dev/null; then
+            echo "Cached aarch64 GCC archive is broken; re-downloading."
+            rm -f "${aarch64_gcc_tar}"
+            download_if_missing "${aarch64_gcc_url}" "${aarch64_gcc_tar}"
+          fi
+          if ! tar -tf "${arm_gcc_tar}" >/dev/null; then
+            echo "Cached arm GCC archive is broken; re-downloading."
+            rm -f "${arm_gcc_tar}"
+            download_if_missing "${arm_gcc_url}" "${arm_gcc_tar}"
           fi
 
           if [ ! -x toolchains/clang/bin/clang ]; then
@@ -131,6 +184,15 @@ jobs:
             mkdir -p toolchains/arm-linux-androideabi-4.9
             tar -xf "${arm_gcc_tar}" -C toolchains/arm-linux-androideabi-4.9
           fi
+
+      - name: Verify toolchains
+        run: |
+          set -euo pipefail
+          export PATH="${GITHUB_WORKSPACE}/toolchains/clang/bin:${GITHUB_WORKSPACE}/toolchains/aarch64-linux-android-4.9/bin:${GITHUB_WORKSPACE}/toolchains/arm-linux-androideabi-4.9/bin:${PATH}"
+          clang --version | head -n 1
+          ld.lld --version | head -n 1
+          aarch64-linux-android-gcc --version | head -n 1
+          arm-linux-androideabi-gcc --version | head -n 1
 
       - name: Save downloaded sources and toolchains cache
         if: steps.download-cache.outputs.cache-hit != 'true'
@@ -328,9 +390,18 @@ jobs:
           if [ "${KSU_VARIANT}" = "kernelsu-next" ]; then
             echo "Using KernelSU Next ref: ${setup_ref}"
             echo "This is intended for KernelSU Next legacy managers such as v3.0.0-30-legacy."
+            if [ "${setup_ref}" = "legacy" ]; then
+              echo "legacy tracks the latest legacy branch; use v3.0.0 for the v3.0.0-30-legacy manager generation."
+            fi
           fi
 
           curl -LSs "${setup_url}" | bash -s "${setup_ref}"
+          if [ -d KernelSU-Next/.git ]; then
+            git -C KernelSU-Next describe --tags --always --dirty || true
+          fi
+          if [ -d KernelSU/.git ]; then
+            git -C KernelSU describe --tags --always --dirty || true
+          fi
 
       - name: Patch KernelSU for Linux 4.14 compatibility
         working-directory: kernel
@@ -359,17 +430,50 @@ jobs:
 
           ls -l include/linux/pgtable.h
 
-          if grep -R "strncpy_from_user_nofault" -n drivers/kernelsu >/dev/null 2>&1; then
-            grep -RIl "strncpy_from_user_nofault" drivers/kernelsu | \
-              xargs -r sed -i 's/strncpy_from_user_nofault/strncpy_from_user/g'
+          if [ -f drivers/kernelsu/compat/kernel_compat.h ]; then
+            python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          header = Path("drivers/kernelsu/compat/kernel_compat.h")
+          source = Path("drivers/kernelsu/compat/kernel_compat.c")
+
+          text = header.read_text()
+          text = re.sub(
+              r"\nextern long strncpy_from_user\([^;]*?\);\n",
+              "\n",
+              text,
+              flags=re.S,
+          )
+          if "KSU_414_USERCOPY_NOFAULT_COMPAT" not in text:
+              compat = """
+          #ifndef KSU_414_USERCOPY_NOFAULT_COMPAT
+          #define KSU_414_USERCOPY_NOFAULT_COMPAT
+          #include <linux/uaccess.h>
+          #define strncpy_from_user_nofault(dst, src, count) \\
+          	strncpy_from_user((dst), (const char __user *)(src), (count))
+          #endif
+
+          """
+              text = compat + text
+          header.write_text(text)
+
+          if source.exists():
+              text = source.read_text()
+              text = text.replace(
+                  "long strncpy_from_user(char *dst, const void __user *unsafe_addr,",
+                  "static long ksu_unused_strncpy_from_user_compat("
+                  "char *dst, const void __user *unsafe_addr,",
+              )
+              source.write_text(text)
+          PY
           fi
 
-          if grep -R "ksys_close" -n drivers/kernelsu >/dev/null 2>&1; then
-            grep -RIl "ksys_close" drivers/kernelsu | \
-              xargs -r sed -i 's/ksys_close/sys_close/g'
+          if [ -f drivers/kernelsu/include/util.h ] && \
+             grep -q "#define ksu_close_fd ksys_close" drivers/kernelsu/include/util.h; then
+            sed -i 's/#define ksu_close_fd ksys_close/#define ksu_close_fd sys_close/' \
+              drivers/kernelsu/include/util.h
           fi
-
-          ! grep -R "strncpy_from_user_nofault\\|ksys_close" -n drivers/kernelsu
 
           if [ -f drivers/kernelsu/hook/syscall_hook.h ] && \
              ! grep -q "KSU_414_SYSCALL_FN_T_COMPAT" drivers/kernelsu/hook/syscall_hook.h; then
@@ -513,6 +617,7 @@ jobs:
           grep -q '^CONFIG_SECURITY=y' "${cfg}"
           grep -q '^CONFIG_SECURITY_SELINUX=y' "${cfg}"
           grep -q '^CONFIG_KSU_KPROBES_HOOK=y' "${cfg}"
+          ! grep -q '^CONFIG_ANDROID_PARANOID_NETWORK=y' "${cfg}"
 
       - name: Build kernel
         working-directory: kernel
@@ -542,13 +647,18 @@ jobs:
           tar -xf anykernel.tar.gz --strip-components=1 -C AnyKernel3
           rm -rf AnyKernel3/.git* AnyKernel3/README.md
 
-          image="kernel/${OUT_DIR}/arch/arm64/boot/Image.gz-dtb"
-          if [ ! -f "${image}" ]; then
-            image="kernel/${OUT_DIR}/arch/arm64/boot/Image.gz"
+          boot_dir="kernel/${OUT_DIR}/arch/arm64/boot"
+          image="${boot_dir}/Image.gz-dtb"
+          if [ ! -f "${image}" ] && [ -f "${boot_dir}/Image.gz" ] && [ -f "${boot_dir}/dts/mediatek/mt6885.dtb" ]; then
+            cat "${boot_dir}/Image.gz" "${boot_dir}/dts/mediatek/mt6885.dtb" > "${image}"
           fi
           if [ ! -f "${image}" ]; then
-            image="kernel/${OUT_DIR}/arch/arm64/boot/Image"
+            image="${boot_dir}/Image.gz"
           fi
+          if [ ! -f "${image}" ]; then
+            image="${boot_dir}/Image"
+          fi
+          ls -lh "${boot_dir}"
           cp "${image}" AnyKernel3/
 
           sed -i 's/^device.name1=.*/device.name1=cezanne/' AnyKernel3/anykernel.sh || true
@@ -563,6 +673,25 @@ jobs:
         with:
           name: K30Ultra-DroidSpaces-KernelSU
           path: K30Ultra-DroidSpaces-KernelSU.zip
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: K30Ultra-build-diagnostics
+          if-no-files-found: ignore
+          path: |
+            kernel/out/.config
+            kernel/out/include/generated/autoconf.h
+            kernel/include/linux/pgtable.h
+            kernel/drivers/kernelsu/Kbuild
+            kernel/drivers/kernelsu/Makefile
+            kernel/drivers/kernelsu/compat/kernel_compat.h
+            kernel/drivers/kernelsu/compat/kernel_compat.c
+            kernel/drivers/kernelsu/hook/syscall_hook.h
+            kernel/drivers/kernelsu/feature/sucompat.c
+            kernel/fs/internal.h
+            kernel/fs/namespace.c
 
       - name: Publish release
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
