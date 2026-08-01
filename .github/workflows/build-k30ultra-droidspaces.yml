@@ -121,13 +121,6 @@ jobs:
         run: |
           cd ${{ env.KERNEL_DIR }}
 
-          # cezanne-r-oss is missing SELinux generated headers.
-          # Xiaomi backported newer SELinux code to 4.14 but did not include
-          # the pre-generated flask.h/av_permissions.h in the source release.
-          # We download compatible versions from Linux 5.4 LTS which has the
-          # same SELinux class definitions plus SECINITSID_NUM and other
-          # macros needed by the backported sidtab code.
-
           mkdir -p security/selinux/include
 
           UPSTREAM_BASE="https://raw.githubusercontent.com/torvalds/linux/v5.4/security/selinux/include"
@@ -141,8 +134,6 @@ jobs:
             fi
           done
 
-          # Also place copies in security/selinux/ where the kernel Makefile
-          # normally generates them, in case any code looks there.
           for f in flask.h av_permissions.h; do
             if [ -f "security/selinux/include/$f" ] && [ ! -f "security/selinux/$f" ]; then
               cp "security/selinux/include/$f" "security/selinux/$f"
@@ -151,19 +142,24 @@ jobs:
 
           echo "SELinux include directory contents:"
           ls -la security/selinux/include/ || true
-          echo "SELinux directory contents:"
-          ls -la security/selinux/*.h 2>/dev/null || true
 
       - name: Fix backported SELinux sidtab for 4.14
         run: |
           cd ${{ env.KERNEL_DIR }}
 
-          # Xiaomi backported sidtab hash table code from 5.x to 4.14 but
-          # the backported sidtab.h references SECINITSID_NUM (from flask.h)
-          # and CONFIG_SECURITY_SELINUX_SIDTAB_HASH_BITS (a 5.6+ Kconfig option).
-          # Both are missing in 4.14. We fix them here.
-
-          python3 -c "import re, os; content = open('security/selinux/include/initial_sid_to_string.h').read(); entries = re.findall(r'"[^"]+"', content); num = len(entries); print('SECINITSID_NUM = ' + str(num)); open('security/selinux/include/flask.h','a').write('\n#define SECINITSID_NUM ' + str(num) + '\n'); [open('security/selinux/flask.h','a').write('\n#define SECINITSID_NUM ' + str(num) + '\n') if os.path.exists('security/selinux/flask.h') else None]; c = open('security/selinux/ss/sidtab.h').read(); c = c.replace('#define SIDTAB_HASH_BITS CONFIG_SECURITY_SELINUX_SIDTAB_HASH_BITS', '#define SIDTAB_HASH_BITS 9'); open('security/selinux/ss/sidtab.h','w').write(c); print('Fixed sidtab.h: SIDTAB_HASH_BITS = 9')"
+          echo 'import re, os' > /tmp/fix_sidtab.py
+          echo 'content = open("security/selinux/include/initial_sid_to_string.h").read()' >> /tmp/fix_sidtab.py
+          echo 'entries = re.findall(r""[^"]+"", content)' >> /tmp/fix_sidtab.py
+          echo 'num = len(entries)' >> /tmp/fix_sidtab.py
+          echo 'print("SECINITSID_NUM = " + str(num))' >> /tmp/fix_sidtab.py
+          echo 'open("security/selinux/include/flask.h","a").write("\n#define SECINITSID_NUM " + str(num) + "\n")' >> /tmp/fix_sidtab.py
+          echo 'if os.path.exists("security/selinux/flask.h"):' >> /tmp/fix_sidtab.py
+          echo '    open("security/selinux/flask.h","a").write("\n#define SECINITSID_NUM " + str(num) + "\n")' >> /tmp/fix_sidtab.py
+          echo 'c = open("security/selinux/ss/sidtab.h").read()' >> /tmp/fix_sidtab.py
+          echo 'c = c.replace("#define SIDTAB_HASH_BITS CONFIG_SECURITY_SELINUX_SIDTAB_HASH_BITS", "#define SIDTAB_HASH_BITS 9")' >> /tmp/fix_sidtab.py
+          echo 'open("security/selinux/ss/sidtab.h","w").write(c)' >> /tmp/fix_sidtab.py
+          echo 'print("Fixed sidtab.h: SIDTAB_HASH_BITS = 9")' >> /tmp/fix_sidtab.py
+          python3 /tmp/fix_sidtab.py
 
       - name: Backport path_umount for KernelSU (4.14 required)
         run: |
