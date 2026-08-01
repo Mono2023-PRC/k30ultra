@@ -328,6 +328,41 @@ jobs:
 
           curl -LSs "${setup_url}" | bash -s "${setup_ref}"
 
+      - name: Patch KernelSU for Linux 4.14 compatibility
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+
+          if grep -R "MODULE_IMPORT_NS(" -n drivers/kernelsu >/dev/null 2>&1; then
+            grep -RIl "MODULE_IMPORT_NS(" drivers/kernelsu | xargs -r sed -i '/MODULE_IMPORT_NS(/d'
+          fi
+
+          if [ -f drivers/kernelsu/hook/syscall_hook.h ] && \
+             grep -q "syscall_fn_t" drivers/kernelsu/hook/syscall_hook.h && \
+             ! grep -q "typedef .*syscall_fn_t" drivers/kernelsu/hook/syscall_hook.h; then
+            python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("drivers/kernelsu/hook/syscall_hook.h")
+          text = path.read_text()
+          compat = """
+          #ifndef KSU_414_SYSCALL_FN_T_COMPAT
+          #define KSU_414_SYSCALL_FN_T_COMPAT
+          struct pt_regs;
+          typedef long (*syscall_fn_t)(const struct pt_regs *);
+          #endif
+
+          """
+
+          if "KSU_414_SYSCALL_FN_T_COMPAT" not in text:
+              if "#pragma once" in text:
+                  text = text.replace("#pragma once\n", "#pragma once\n" + compat, 1)
+              else:
+                  text = compat + text
+              path.write_text(text)
+          PY
+          fi
+
       - name: Configure DroidSpaces kernel options
         working-directory: kernel
         env:
