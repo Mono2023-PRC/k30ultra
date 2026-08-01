@@ -88,54 +88,54 @@ jobs:
 
           if ! grep -R "path_umount" -n fs/namespace.c >/dev/null; then
             python3 - <<'PY'
-from pathlib import Path
+          from pathlib import Path
 
-path = Path("fs/namespace.c")
-text = path.read_text()
+          path = Path("fs/namespace.c")
+          text = path.read_text()
 
-marker = "SYSCALL_DEFINE2(umount"
-func = r'''
-static int can_umount(const struct path *path, int flags)
-{
-	struct mount *mnt = real_mount(path->mnt);
+          marker = "SYSCALL_DEFINE2(umount"
+          func = r'''
+          static int can_umount(const struct path *path, int flags)
+          {
+          	struct mount *mnt = real_mount(path->mnt);
 
-	if (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))
-		return -EINVAL;
-	if (!may_mount())
-		return -EPERM;
-	if (path->dentry != path->mnt->mnt_root)
-		return -EINVAL;
-	if (!check_mnt(mnt))
-		return -EINVAL;
-	if (mnt->mnt.mnt_flags & MNT_LOCKED)
-		return -EINVAL;
-	if (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))
-		return -EPERM;
-	return 0;
-}
+          	if (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))
+          		return -EINVAL;
+          	if (!may_mount())
+          		return -EPERM;
+          	if (path->dentry != path->mnt->mnt_root)
+          		return -EINVAL;
+          	if (!check_mnt(mnt))
+          		return -EINVAL;
+          	if (mnt->mnt.mnt_flags & MNT_LOCKED)
+          		return -EINVAL;
+          	if (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))
+          		return -EPERM;
+          	return 0;
+          }
 
-int path_umount(struct path *path, int flags)
-{
-	struct mount *mnt = real_mount(path->mnt);
-	int retval;
+          int path_umount(struct path *path, int flags)
+          {
+          	struct mount *mnt = real_mount(path->mnt);
+          	int retval;
 
-	retval = can_umount(path, flags);
-	if (!retval)
-		retval = do_umount(mnt, flags);
+          	retval = can_umount(path, flags);
+          	if (!retval)
+          		retval = do_umount(mnt, flags);
 
-	/* We must not call path_put(), because that would clear mnt_expiry_mark. */
-	dput(path->dentry);
-	mntput_no_expire(mnt);
-	return retval;
-}
-EXPORT_SYMBOL(path_umount);
+          	/* We must not call path_put(), because that would clear mnt_expiry_mark. */
+          	dput(path->dentry);
+          	mntput_no_expire(mnt);
+          	return retval;
+          }
+          EXPORT_SYMBOL(path_umount);
 
-'''
-if marker not in text:
-    raise SystemExit("Cannot find umount syscall marker in fs/namespace.c")
+          '''
+          if marker not in text:
+              raise SystemExit("Cannot find umount syscall marker in fs/namespace.c")
 
-path.write_text(text.replace(marker, func + marker, 1))
-PY
+          path.write_text(text.replace(marker, func + marker, 1))
+          PY
           fi
 
       - name: Restore SELinux generated headers for KernelSU compatibility
