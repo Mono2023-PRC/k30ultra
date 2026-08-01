@@ -317,6 +317,13 @@ jobs:
             cfg_unset KSU_SUSFS_SPOOF_UNAME
           fi
 
+          for opt in \
+            LTO LTO_CLANG LTO_CLANG_FULL LTO_CLANG_THIN THINLTO \
+            CFI_CLANG CFI_PERMISSIVE SHADOW_CALL_STACK \
+            LD_DEAD_CODE_DATA_ELIMINATION; do
+            cfg_unset "${opt}"
+          done
+
           if [ -x scripts/config ]; then
             scripts/config --file "${cfg}" --set-str DEFAULT_SECURITY selinux || true
           else
@@ -324,7 +331,17 @@ jobs:
             echo 'CONFIG_DEFAULT_SECURITY="selinux"' >> "${cfg}"
           fi
 
-          make O="${OUT_DIR}" ARCH=arm64 olddefconfig
+          make O="${OUT_DIR}" ARCH=arm64 olddefconfig \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi-
 
           grep -E 'CONFIG_(SECURITY|SECURITY_SELINUX|KSU)=' "${cfg}" || true
           grep -q '^CONFIG_AUDIT=y' "${cfg}"
@@ -342,6 +359,12 @@ jobs:
           export KBUILD_BUILD_HOST=actions
           make -j"$(nproc)" O="${OUT_DIR}" ARCH=arm64 \
             CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-android- \
             CROSS_COMPILE_ARM32=arm-linux-androideabi-
