@@ -519,6 +519,33 @@ jobs:
               drivers/kernelsu/include/util.h
           fi
 
+          if [ -f drivers/kernelsu/allowlist.c ]; then
+            python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("drivers/kernelsu/allowlist.c")
+          text = path.read_text()
+
+          if "#include <linux/sched/task.h>" not in text:
+              lines = text.splitlines(keepends=True)
+              insert_at = 0
+              for index, line in enumerate(lines):
+                  if line.startswith("#include "):
+                      insert_at = index + 1
+              lines.insert(insert_at, "#include <linux/sched/task.h>\n")
+              text = "".join(lines)
+
+          text = text.replace(
+              "task_work_add(tsk, cb, TWA_RESUME)",
+              "task_work_add(tsk, cb, true)",
+          )
+
+          path.write_text(text)
+          PY
+            grep -n "sched/task.h\\|task_work_add\\|put_task_struct" \
+              drivers/kernelsu/allowlist.c || true
+          fi
+
           if [ -f drivers/kernelsu/hook/syscall_hook.h ] && \
              ! grep -q "KSU_414_SYSCALL_FN_T_COMPAT" drivers/kernelsu/hook/syscall_hook.h; then
             python3 - <<'PY'
