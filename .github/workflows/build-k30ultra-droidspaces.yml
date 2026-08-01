@@ -22,6 +22,11 @@ on:
         required: true
         default: false
         type: boolean
+      cache_buster:
+        description: Change this value to force re-downloading kernel source and toolchains
+        required: true
+        default: v1
+        type: string
 
 permissions:
   contents: write
@@ -34,6 +39,7 @@ env:
   DEFCONFIG: cezanne_user_defconfig
   OUT_DIR: out
   CLANG_VERSION: clang-r416183b
+  DOWNLOAD_CACHE_DIR: .cache/downloads
 
 jobs:
   build:
@@ -52,30 +58,89 @@ jobs:
             bc bison build-essential ccache curl flex git jq libelf-dev \
             libssl-dev lz4 python3 unzip wget zip
 
+      - name: Restore downloaded sources and toolchains cache
+        id: download-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ env.DOWNLOAD_CACHE_DIR }}
+            toolchains
+          key: k30ultra-${{ runner.os }}-${{ env.KERNEL_BRANCH }}-${{ env.CLANG_VERSION }}-${{ inputs.cache_buster }}
+
       - name: Download kernel source
         run: |
           set -euo pipefail
-          wget -qO kernel.tar.gz \
-            "https://github.com/MiCode/Xiaomi_Kernel_OpenSource/archive/refs/heads/${KERNEL_BRANCH}.tar.gz"
+          mkdir -p "${DOWNLOAD_CACHE_DIR}" kernel
+          kernel_tar="${DOWNLOAD_CACHE_DIR}/xiaomi-${KERNEL_BRANCH}.tar.gz"
+
+          if [ ! -s "${kernel_tar}" ]; then
+            wget -qO "${kernel_tar}" \
+              "https://github.com/MiCode/Xiaomi_Kernel_OpenSource/archive/refs/heads/${KERNEL_BRANCH}.tar.gz"
+          else
+            echo "Using cached kernel source archive: ${kernel_tar}"
+          fi
+
+          rm -rf kernel
           mkdir -p kernel
-          tar -xf kernel.tar.gz --strip-components=1 -C kernel
+          tar -xf "${kernel_tar}" --strip-components=1 -C kernel
 
       - name: Download Android toolchains
         run: |
           set -euo pipefail
-          mkdir -p toolchains/clang toolchains/aarch64-linux-android-4.9 toolchains/arm-linux-androideabi-4.9
+          mkdir -p "${DOWNLOAD_CACHE_DIR}" toolchains
 
-          wget -qO clang.tar.gz \
-            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/${CLANG_VERSION}.tar.gz"
-          tar -xf clang.tar.gz -C toolchains/clang
+          clang_tar="${DOWNLOAD_CACHE_DIR}/${CLANG_VERSION}.tar.gz"
+          aarch64_gcc_tar="${DOWNLOAD_CACHE_DIR}/aarch64-linux-android-4.9-android12-release.tar.gz"
+          arm_gcc_tar="${DOWNLOAD_CACHE_DIR}/arm-linux-androideabi-4.9-android12-release.tar.gz"
 
-          wget -qO aarch64-gcc.tar.gz \
-            "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/android12-release.tar.gz"
-          tar -xf aarch64-gcc.tar.gz -C toolchains/aarch64-linux-android-4.9
+          if [ ! -s "${clang_tar}" ]; then
+            wget -qO "${clang_tar}" \
+              "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/${CLANG_VERSION}.tar.gz"
+          else
+            echo "Using cached clang archive: ${clang_tar}"
+          fi
 
-          wget -qO arm-gcc.tar.gz \
-            "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/android12-release.tar.gz"
-          tar -xf arm-gcc.tar.gz -C toolchains/arm-linux-androideabi-4.9
+          if [ ! -s "${aarch64_gcc_tar}" ]; then
+            wget -qO "${aarch64_gcc_tar}" \
+              "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/android12-release.tar.gz"
+          else
+            echo "Using cached aarch64 GCC archive: ${aarch64_gcc_tar}"
+          fi
+
+          if [ ! -s "${arm_gcc_tar}" ]; then
+            wget -qO "${arm_gcc_tar}" \
+              "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/android12-release.tar.gz"
+          else
+            echo "Using cached arm GCC archive: ${arm_gcc_tar}"
+          fi
+
+          if [ ! -x toolchains/clang/bin/clang ]; then
+            rm -rf toolchains/clang
+            mkdir -p toolchains/clang
+            tar -xf "${clang_tar}" -C toolchains/clang
+          fi
+
+          if [ ! -x toolchains/aarch64-linux-android-4.9/bin/aarch64-linux-android-gcc ]; then
+            rm -rf toolchains/aarch64-linux-android-4.9
+            mkdir -p toolchains/aarch64-linux-android-4.9
+            tar -xf "${aarch64_gcc_tar}" -C toolchains/aarch64-linux-android-4.9
+          fi
+
+          if [ ! -x toolchains/arm-linux-androideabi-4.9/bin/arm-linux-androideabi-gcc ]; then
+            rm -rf toolchains/arm-linux-androideabi-4.9
+            mkdir -p toolchains/arm-linux-androideabi-4.9
+            tar -xf "${arm_gcc_tar}" -C toolchains/arm-linux-androideabi-4.9
+          fi
+
+      - name: Save downloaded sources and toolchains cache
+        if: steps.download-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: |
+            ${{ env.DOWNLOAD_CACHE_DIR }}
+            toolchains
+          key: ${{ steps.download-cache.outputs.cache-primary-key }}
 
       - name: Prepare source patches
         working-directory: kernel
@@ -85,6 +150,27 @@ jobs:
           if grep -RIl "static inline.*mt_get_uartlog_status" . | xargs -r sed -i 's/static inline \([a-zA-Z_][a-zA-Z0-9_[:space:]*]*mt_get_uartlog_status[[:space:]]*(\)/inline \1/g'; then
             echo "Applied MTK UART log declaration compatibility patch."
           fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("drivers/gpu/drm/mediatek/mtk_drm_crtc.c")
+          if path.exists():
+              text = path.read_text()
+
+              def fix_cmdq_log(match):
+                  block = match.group(0)
+                  if "cmdq_handle" not in block:
+                      return block
+                  block = block.replace("0x%x", "%p")
+                  block = block.replace("%x", "%p")
+                  block = block.replace("(unsigned int)*cmdq_handle", "*cmdq_handle")
+                  return block
+
+              text = re.sub(r"DDPPR_ERR\([\s\S]*?\);", fix_cmdq_log, text)
+              path.write_text(text)
+          PY
 
           if ! grep -R "path_umount" -n fs/namespace.c >/dev/null; then
             python3 - <<'PY'
@@ -320,7 +406,7 @@ jobs:
           for opt in \
             LTO LTO_CLANG LTO_CLANG_FULL LTO_CLANG_THIN THINLTO \
             CFI_CLANG CFI_PERMISSIVE SHADOW_CALL_STACK \
-            LD_DEAD_CODE_DATA_ELIMINATION; do
+            LD_DEAD_CODE_DATA_ELIMINATION WERROR CC_WERROR; do
             cfg_unset "${opt}"
           done
 
@@ -339,6 +425,7 @@ jobs:
             OBJCOPY=llvm-objcopy \
             OBJDUMP=llvm-objdump \
             STRIP=llvm-strip \
+            KCFLAGS="-Wno-error=pointer-to-int-cast -Wno-error=int-to-pointer-cast" \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-android- \
             CROSS_COMPILE_ARM32=arm-linux-androideabi-
@@ -365,6 +452,7 @@ jobs:
             OBJCOPY=llvm-objcopy \
             OBJDUMP=llvm-objdump \
             STRIP=llvm-strip \
+            KCFLAGS="-Wno-error=pointer-to-int-cast -Wno-error=int-to-pointer-cast" \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-android- \
             CROSS_COMPILE_ARM32=arm-linux-androideabi-
