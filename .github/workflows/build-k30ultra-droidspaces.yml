@@ -338,8 +338,7 @@ jobs:
           fi
 
           if [ -f drivers/kernelsu/hook/syscall_hook.h ] && \
-             grep -q "syscall_fn_t" drivers/kernelsu/hook/syscall_hook.h && \
-             ! grep -q "typedef .*syscall_fn_t" drivers/kernelsu/hook/syscall_hook.h; then
+             ! grep -q "KSU_414_SYSCALL_FN_T_COMPAT" drivers/kernelsu/hook/syscall_hook.h; then
             python3 - <<'PY'
           from pathlib import Path
 
@@ -348,20 +347,27 @@ jobs:
           compat = """
           #ifndef KSU_414_SYSCALL_FN_T_COMPAT
           #define KSU_414_SYSCALL_FN_T_COMPAT
+          #include <linux/linkage.h>
           struct pt_regs;
-          typedef long (*syscall_fn_t)(const struct pt_regs *);
+          typedef asmlinkage long (*syscall_fn_t)(const struct pt_regs *);
           #endif
 
           """
 
-          if "KSU_414_SYSCALL_FN_T_COMPAT" not in text:
-              if "#pragma once" in text:
-                  text = text.replace("#pragma once\n", "#pragma once\n" + compat, 1)
-              else:
-                  text = compat + text
-              path.write_text(text)
+          if "#pragma once" in text:
+              text = text.replace("#pragma once\n", "#pragma once\n" + compat, 1)
+          elif text.startswith("#ifndef ") and "#define " in text.splitlines()[1:3]:
+              lines = text.splitlines(keepends=True)
+              insert_at = 2
+              text = "".join(lines[:insert_at]) + compat + "".join(lines[insert_at:])
+          else:
+              text = compat + text
+          path.write_text(text)
           PY
           fi
+
+          grep -n "KSU_414_SYSCALL_FN_T_COMPAT\\|typedef .*syscall_fn_t\\|extern syscall_fn_t" \
+            drivers/kernelsu/hook/syscall_hook.h || true
 
       - name: Configure DroidSpaces kernel options
         working-directory: kernel
