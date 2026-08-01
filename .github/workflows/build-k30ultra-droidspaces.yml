@@ -147,19 +147,22 @@ jobs:
         run: |
           cd ${{ env.KERNEL_DIR }}
 
-          echo 'import re, os' > /tmp/fix_sidtab.py
-          echo 'content = open("security/selinux/include/initial_sid_to_string.h").read()' >> /tmp/fix_sidtab.py
-          echo 'entries = re.findall(r""[^"]+"", content)' >> /tmp/fix_sidtab.py
-          echo 'num = len(entries)' >> /tmp/fix_sidtab.py
-          echo 'print("SECINITSID_NUM = " + str(num))' >> /tmp/fix_sidtab.py
-          echo 'open("security/selinux/include/flask.h","a").write("\n#define SECINITSID_NUM " + str(num) + "\n")' >> /tmp/fix_sidtab.py
-          echo 'if os.path.exists("security/selinux/flask.h"):' >> /tmp/fix_sidtab.py
-          echo '    open("security/selinux/flask.h","a").write("\n#define SECINITSID_NUM " + str(num) + "\n")' >> /tmp/fix_sidtab.py
-          echo 'c = open("security/selinux/ss/sidtab.h").read()' >> /tmp/fix_sidtab.py
-          echo 'c = c.replace("#define SIDTAB_HASH_BITS CONFIG_SECURITY_SELINUX_SIDTAB_HASH_BITS", "#define SIDTAB_HASH_BITS 9")' >> /tmp/fix_sidtab.py
-          echo 'open("security/selinux/ss/sidtab.h","w").write(c)' >> /tmp/fix_sidtab.py
-          echo 'print("Fixed sidtab.h: SIDTAB_HASH_BITS = 9")' >> /tmp/fix_sidtab.py
-          python3 /tmp/fix_sidtab.py
+          # Count initial SIDs from initial_sid_to_string.h (lines containing quoted strings)
+          NUM=$(grep -c '"' security/selinux/include/initial_sid_to_string.h || echo 0)
+          echo "Computed SECINITSID_NUM = $NUM"
+
+          # Append to flask.h
+          echo "" >> security/selinux/include/flask.h
+          echo "#define SECINITSID_NUM $NUM" >> security/selinux/include/flask.h
+
+          if [ -f "security/selinux/flask.h" ]; then
+            echo "" >> security/selinux/flask.h
+            echo "#define SECINITSID_NUM $NUM" >> security/selinux/flask.h
+          fi
+
+          # Fix sidtab.h - replace Kconfig-dependent macro with literal
+          sed -i 's/#define SIDTAB_HASH_BITS CONFIG_SECURITY_SELINUX_SIDTAB_HASH_BITS/#define SIDTAB_HASH_BITS 9/' security/selinux/ss/sidtab.h
+          echo "Fixed sidtab.h: SIDTAB_HASH_BITS = 9"
 
       - name: Backport path_umount for KernelSU (4.14 required)
         run: |
