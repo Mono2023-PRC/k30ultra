@@ -31,7 +31,7 @@ env:
   ARCH: arm64
   SUBARCH: arm64
   KERNEL_BRANCH: cezanne-r-oss
-  DEFCONFIG: cezanne_defconfig
+  DEFCONFIG: cezanne_user_defconfig
   OUT_DIR: out
   CLANG_VERSION: clang-r416183b
 
@@ -250,6 +250,18 @@ jobs:
           set -euo pipefail
 
           export PATH="${GITHUB_WORKSPACE}/toolchains/clang/bin:${GITHUB_WORKSPACE}/toolchains/aarch64-linux-android-4.9/bin:${GITHUB_WORKSPACE}/toolchains/arm-linux-androideabi-4.9/bin:${PATH}"
+          if [ ! -f "arch/arm64/configs/${DEFCONFIG}" ]; then
+            if [ -f arch/arm64/configs/cezanne_user_defconfig ]; then
+              DEFCONFIG=cezanne_user_defconfig
+            elif [ -f arch/arm64/configs/k6889v1_64_defconfig ]; then
+              DEFCONFIG=k6889v1_64_defconfig
+            else
+              echo "Available arm64 defconfigs:"
+              find arch/arm64/configs -maxdepth 1 -name '*defconfig' -printf '%f\n' | sort
+              exit 1
+            fi
+          fi
+          echo "Using defconfig: ${DEFCONFIG}"
           make O="${OUT_DIR}" ARCH=arm64 "${DEFCONFIG}"
 
           cfg="${OUT_DIR}/.config"
