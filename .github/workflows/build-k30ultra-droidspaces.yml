@@ -4,364 +4,335 @@ on:
   workflow_dispatch:
     inputs:
       kernelsu_variant:
-        description: 'KernelSU Variant'
+        description: KernelSU variant
         required: true
-        default: 'kernelsu'
+        default: kernelsu
         type: choice
         options:
           - kernelsu
           - kernelsu-next
           - sukisu-ultra
       kernelsu_ref:
-        description: 'KernelSU Branch/Tag (e.g. v0.9.5, main)'
+        description: KernelSU branch or tag; KernelSU Next 4.14 normally uses legacy
         required: true
-        default: 'v0.9.5'
+        default: main
+        type: string
       enable_susfs:
-        description: 'Enable SUSFS (NOT recommended for DroidSpaces)'
+        description: Enable SUSFS patches (not recommended for DroidSpaces)
         required: true
         default: false
         type: boolean
 
+permissions:
+  contents: write
+
 env:
-  KERNEL_SOURCE: https://github.com/MiCode/Xiaomi_Kernel_OpenSource
-  KERNEL_BRANCH: cezanne-r-oss
-  KERNEL_CONFIG: cezanne_defconfig
+  DEVICE: cezanne
   ARCH: arm64
-  IMAGE_NAME: Image.gz-dtb
-  ANYKERNEL_URL: https://github.com/osm0sis/AnyKernel3
-  ANYKERNEL_BRANCH: master
+  SUBARCH: arm64
+  KERNEL_BRANCH: cezanne-r-oss
+  DEFCONFIG: cezanne_defconfig
+  OUT_DIR: out
+  CLANG_VERSION: clang-r416183b
 
 jobs:
   build:
+    name: Build DroidSpaces KernelSU kernel
     runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
     steps:
-      - name: Checkout
+      - name: Checkout packaging repository
         uses: actions/checkout@v4
 
-      - name: Setup Build Environment
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential clang lld make git python3 bc flex bison ccache libelf-dev pahole openssl libssl-dev perl zstd binutils ncurses-dev xz-utils
+          sudo apt-get install -y \
+            bc bison build-essential ccache curl flex git jq libelf-dev \
+            libssl-dev lz4 python3 unzip wget zip
 
-      - name: Clone Kernel Source
+      - name: Download kernel source
         run: |
-          git clone --depth=1 -b ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_SOURCE }} kernel
-          cd kernel
-          echo "KERNEL_DIR=$(pwd)" >> $GITHUB_ENV
+          set -euo pipefail
+          wget -qO kernel.tar.gz \
+            "https://github.com/MiCode/Xiaomi_Kernel_OpenSource/archive/refs/heads/${KERNEL_BRANCH}.tar.gz"
+          mkdir -p kernel
+          tar -xf kernel.tar.gz --strip-components=1 -C kernel
 
-      - name: Download Toolchains
+      - name: Download Android toolchains
         run: |
-          mkdir -p toolchain
-          cd toolchain
+          set -euo pipefail
+          mkdir -p toolchains/clang toolchains/aarch64-linux-android-4.9 toolchains/arm-linux-androideabi-4.9
 
-          echo "Downloading AOSP Clang r416183b..."
-          wget -q --show-progress \
-            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-12.1.0_r1/clang-r416183b.tar.gz" \
-            -O clang-r416183b.tar.gz
-          mkdir -p clang
-          tar -xzf clang-r416183b.tar.gz -C clang
-          rm clang-r416183b.tar.gz
+          wget -qO clang.tar.gz \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/${CLANG_VERSION}.tar.gz"
+          tar -xf clang.tar.gz -C toolchains/clang
 
-          echo "Downloading AOSP GCC aarch64..."
-          wget -q --show-progress \
-            "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz" \
-            -O gcc-aarch64.tar.gz
-          mkdir -p gcc-aarch64
-          tar -xzf gcc-aarch64.tar.gz -C gcc-aarch64
-          rm gcc-aarch64.tar.gz
+          wget -qO aarch64-gcc.tar.gz \
+            "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/android12-release.tar.gz"
+          tar -xf aarch64-gcc.tar.gz -C toolchains/aarch64-linux-android-4.9
 
-          echo "Downloading AOSP GCC arm..."
-          wget -q --show-progress \
-            "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz" \
-            -O gcc-arm.tar.gz
-          mkdir -p gcc-arm
-          tar -xzf gcc-arm.tar.gz -C gcc-arm
-          rm gcc-arm.tar.gz
+          wget -qO arm-gcc.tar.gz \
+            "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/android12-release.tar.gz"
+          tar -xf arm-gcc.tar.gz -C toolchains/arm-linux-androideabi-4.9
 
-          echo "TOOLCHAIN_DIR=$(pwd)" >> $GITHUB_ENV
-          echo "Toolchains downloaded successfully!"
-
-      - name: Fix MTK printk header conflict (Clang compatibility)
+      - name: Prepare source patches
+        working-directory: kernel
         run: |
-          cd ${{ env.KERNEL_DIR }}
+          set -euo pipefail
 
-          MTK_PRINTK_H="drivers/misc/mediatek/include/mt-plat/mtk_printk_ctrl.h"
-          if [ -f "$MTK_PRINTK_H" ]; then
-            echo "Fixing mtk_printk_ctrl.h static declaration conflict..."
-            sed -i 's/static inline bool mt_get_uartlog_status/inline bool mt_get_uartlog_status/' "$MTK_PRINTK_H"
-            echo "Fixed: $(grep -n 'mt_get_uartlog_status' $MTK_PRINTK_H || echo 'pattern not found')"
+          if grep -RIl "static inline.*mt_get_uartlog_status" . | xargs -r sed -i 's/static inline \([a-zA-Z_][a-zA-Z0-9_[:space:]*]*mt_get_uartlog_status[[:space:]]*(\)/inline \1/g'; then
+            echo "Applied MTK UART log declaration compatibility patch."
           fi
 
-          PRINTK_H="include/linux/printk.h"
-          if [ -f "$PRINTK_H" ]; then
-            echo "printk.h declaration: $(grep -n 'mt_get_uartlog_status' $PRINTK_H || echo 'not found')"
+          if ! grep -R "path_umount" -n fs/namespace.c >/dev/null; then
+            python3 - <<'PY'
+from pathlib import Path
+
+path = Path("fs/namespace.c")
+text = path.read_text()
+
+marker = "SYSCALL_DEFINE2(umount"
+func = r'''
+static int can_umount(const struct path *path, int flags)
+{
+	struct mount *mnt = real_mount(path->mnt);
+
+	if (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))
+		return -EINVAL;
+	if (!may_mount())
+		return -EPERM;
+	if (path->dentry != path->mnt->mnt_root)
+		return -EINVAL;
+	if (!check_mnt(mnt))
+		return -EINVAL;
+	if (mnt->mnt.mnt_flags & MNT_LOCKED)
+		return -EINVAL;
+	if (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))
+		return -EPERM;
+	return 0;
+}
+
+int path_umount(struct path *path, int flags)
+{
+	struct mount *mnt = real_mount(path->mnt);
+	int retval;
+
+	retval = can_umount(path, flags);
+	if (!retval)
+		retval = do_umount(mnt, flags);
+
+	/* We must not call path_put(), because that would clear mnt_expiry_mark. */
+	dput(path->dentry);
+	mntput_no_expire(mnt);
+	return retval;
+}
+EXPORT_SYMBOL(path_umount);
+
+'''
+if marker not in text:
+    raise SystemExit("Cannot find umount syscall marker in fs/namespace.c")
+
+path.write_text(text.replace(marker, func + marker, 1))
+PY
           fi
 
-      - name: Setup KernelSU (Non-GKI / kprobe mode)
+      - name: Restore SELinux generated headers for KernelSU compatibility
+        working-directory: kernel
         run: |
-          cd ${{ env.KERNEL_DIR }}
-
-          if [ "${{ inputs.kernelsu_variant }}" == "kernelsu" ]; then
-            git clone --depth=1 -b ${{ inputs.kernelsu_ref }} https://github.com/tiann/KernelSU.git KernelSU
-          elif [ "${{ inputs.kernelsu_variant }}" == "kernelsu-next" ]; then
-            git clone --depth=1 -b ${{ inputs.kernelsu_ref }} https://github.com/rifsxd/KernelSU-Next.git KernelSU
-          elif [ "${{ inputs.kernelsu_variant }}" == "sukisu-ultra" ]; then
-            git clone --depth=1 -b ${{ inputs.kernelsu_ref }} https://github.com/ShirkN/SukiSU-Ultra.git KernelSU
-          fi
-
-          if [ -f "KernelSU/kernel/setup.sh" ]; then
-            bash KernelSU/kernel/setup.sh
-          elif [ -f "KernelSU/setup.sh" ]; then
-            bash KernelSU/setup.sh
-          fi
-
-          echo "KernelSU setup completed"
-
-      - name: Fix missing SELinux headers
-        run: |
-          cd ${{ env.KERNEL_DIR }}
-
+          set -euo pipefail
           mkdir -p security/selinux/include
 
-          UPSTREAM_BASE="https://raw.githubusercontent.com/torvalds/linux/v5.4/security/selinux/include"
+          if [ ! -s security/selinux/include/classmap.h ]; then
+            wget -qO security/selinux/include/classmap.h \
+              "https://raw.githubusercontent.com/torvalds/linux/v5.4/security/selinux/include/classmap.h"
+          fi
+          if [ ! -s security/selinux/include/initial_sid_to_string.h ]; then
+            wget -qO security/selinux/include/initial_sid_to_string.h \
+              "https://raw.githubusercontent.com/torvalds/linux/v5.4/security/selinux/include/initial_sid_to_string.h"
+          fi
 
-          for f in classmap.h initial_sid_to_string.h flask.h av_permissions.h; do
-            if [ ! -f "security/selinux/include/$f" ]; then
-              echo "Downloading $f from Linux 5.4 LTS..."
-              wget -q "$UPSTREAM_BASE/$f" -O "security/selinux/include/$f" || echo "WARNING: failed to download $f"
+          if [ ! -s security/selinux/include/flask.h ] || [ ! -s security/selinux/include/av_permissions.h ]; then
+            gcc -Isecurity/selinux/include -Iinclude \
+              scripts/selinux/genheaders/genheaders.c \
+              -o /tmp/selinux-genheaders
+            /tmp/selinux-genheaders \
+              security/selinux/include/flask.h \
+              security/selinux/include/av_permissions.h
+          fi
+
+          if ! grep -R "SECINITSID_NUM" -n security/selinux/include >/dev/null; then
+            sid_count="$(grep -E '^[[:space:]]*"[a-zA-Z0-9_]+",[[:space:]]*$' security/selinux/include/initial_sid_to_string.h | wc -l)"
+            {
+              echo ""
+              echo "#ifndef SECINITSID_NUM"
+              echo "#define SECINITSID_NUM ${sid_count}"
+              echo "#endif"
+            } >> security/selinux/include/flask.h
+          fi
+
+          if ! grep -R "SIDTAB_HASH_BITS" -n security/selinux >/dev/null; then
+            {
+              echo ""
+              echo "#ifndef SIDTAB_HASH_BITS"
+              echo "#define SIDTAB_HASH_BITS 7"
+              echo "#endif"
+            } >> security/selinux/ss/sidtab.h
+          fi
+
+      - name: Integrate KernelSU
+        working-directory: kernel
+        env:
+          KSU_VARIANT: ${{ inputs.kernelsu_variant }}
+          KSU_REF: ${{ inputs.kernelsu_ref }}
+        run: |
+          set -euo pipefail
+          case "${KSU_VARIANT}" in
+            kernelsu)
+              setup_url="https://raw.githubusercontent.com/tiann/KernelSU/${KSU_REF}/kernel/setup.sh"
+              ;;
+            kernelsu-next)
+              setup_url="https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh"
+              ;;
+            sukisu-ultra)
+              setup_url="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${KSU_REF}/kernel/setup.sh"
+              ;;
+            *)
+              echo "Unknown KernelSU variant: ${KSU_VARIANT}" >&2
+              exit 1
+              ;;
+          esac
+
+          setup_ref="${KSU_REF}"
+          if [ "${KSU_VARIANT}" = "kernelsu-next" ] && [ "${setup_ref}" = "main" ]; then
+            setup_ref="legacy"
+          fi
+
+          curl -LSs "${setup_url}" | bash -s "${setup_ref}"
+
+      - name: Configure DroidSpaces kernel options
+        working-directory: kernel
+        env:
+          ENABLE_SUSFS: ${{ inputs.enable_susfs }}
+        run: |
+          set -euo pipefail
+
+          export PATH="${GITHUB_WORKSPACE}/toolchains/clang/bin:${GITHUB_WORKSPACE}/toolchains/aarch64-linux-android-4.9/bin:${GITHUB_WORKSPACE}/toolchains/arm-linux-androideabi-4.9/bin:${PATH}"
+          make O="${OUT_DIR}" ARCH=arm64 "${DEFCONFIG}"
+
+          cfg="${OUT_DIR}/.config"
+          cfg_set() {
+            if [ -x scripts/config ]; then
+              scripts/config --file "${cfg}" -e "$1"
             else
-              echo "$f already exists"
+              sed -i "/^# CONFIG_$1 is not set/d;/^CONFIG_$1=/d" "${cfg}"
+              echo "CONFIG_$1=y" >> "${cfg}"
             fi
+          }
+          cfg_unset() {
+            if [ -x scripts/config ]; then
+              scripts/config --file "${cfg}" -d "$1"
+            else
+              sed -i "/^# CONFIG_$1 is not set/d;/^CONFIG_$1=/d" "${cfg}"
+              echo "# CONFIG_$1 is not set" >> "${cfg}"
+            fi
+          }
+
+          for opt in \
+            IKCONFIG IKCONFIG_PROC MODULES KALLSYMS KALLSYMS_ALL \
+            KSU KSU_KPROBE_HOOKS KPROBES HAVE_KPROBES KPROBE_EVENTS TRACEPOINTS \
+            SECURITY SECURITY_NETWORK SECURITY_PATH SECURITY_SELINUX SECURITY_SELINUX_AVC_STATS \
+            NO_HZ_COMMON \
+            NAMESPACES PID_NS UTS_NS IPC_NS USER_NS NET_NS \
+            CGROUPS CGROUP_DEVICE CGROUP_PIDS MEMCG CGROUP_SCHED FAIR_GROUP_SCHED CFS_BANDWIDTH FREEZER \
+            CGROUP_NET_PRIO CGROUP_NET_CLASSID NET_CLS_CGROUP \
+            OVERLAY_FS DEVTMPFS DEVTMPFS_MOUNT BLK_DEV_LOOP \
+            VETH BRIDGE TUN DUMMY IPVLAN MACVLAN \
+            NETFILTER NF_CONNTRACK NF_NAT NF_TABLES \
+            IP_NF_IPTABLES IP_NF_FILTER IP_NF_NAT IP_NF_TARGET_MASQUERADE \
+            NETFILTER_XTABLES NETFILTER_XT_MATCH_ADDRTYPE NETFILTER_XT_MATCH_CONNTRACK \
+            NETFILTER_XT_MATCH_OWNER NETFILTER_XT_MATCH_STATE NETFILTER_XT_TARGET_MASQUERADE; do
+            cfg_set "${opt}"
           done
 
-          for f in flask.h av_permissions.h; do
-            if [ -f "security/selinux/include/$f" ] && [ ! -f "security/selinux/$f" ]; then
-              cp "security/selinux/include/$f" "security/selinux/$f"
-            fi
-          done
+          cfg_unset ANDROID_PARANOID_NETWORK
+          cfg_unset SECURITY_SELINUX_DISABLE
+          cfg_unset SECURITY_SELINUX_BOOTPARAM
 
-          echo "SELinux include directory contents:"
-          ls -la security/selinux/include/ || true
-
-      - name: Fix backported SELinux sidtab for 4.14
-        run: |
-          cd ${{ env.KERNEL_DIR }}
-
-          # Count initial SIDs from initial_sid_to_string.h (lines containing quoted strings)
-          NUM=$(grep -c '"' security/selinux/include/initial_sid_to_string.h || echo 0)
-          echo "Computed SECINITSID_NUM = $NUM"
-
-          # Append to flask.h
-          echo "" >> security/selinux/include/flask.h
-          echo "#define SECINITSID_NUM $NUM" >> security/selinux/include/flask.h
-
-          if [ -f "security/selinux/flask.h" ]; then
-            echo "" >> security/selinux/flask.h
-            echo "#define SECINITSID_NUM $NUM" >> security/selinux/flask.h
+          if [ "${ENABLE_SUSFS}" != "true" ]; then
+            cfg_unset KSU_SUSFS
+            cfg_unset KSU_SUSFS_HAS_MAGIC_MOUNT
+            cfg_unset KSU_SUSFS_SUS_PATH
+            cfg_unset KSU_SUSFS_SUS_MOUNT
+            cfg_unset KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT
+            cfg_unset KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
+            cfg_unset KSU_SUSFS_SUS_KSTAT
+            cfg_unset KSU_SUSFS_TRY_UMOUNT
+            cfg_unset KSU_SUSFS_SPOOF_UNAME
           fi
 
-          # Fix sidtab.h - replace Kconfig-dependent macro with literal
-          sed -i 's/#define SIDTAB_HASH_BITS CONFIG_SECURITY_SELINUX_SIDTAB_HASH_BITS/#define SIDTAB_HASH_BITS 9/' security/selinux/ss/sidtab.h
-          echo "Fixed sidtab.h: SIDTAB_HASH_BITS = 9"
-
-      - name: Backport path_umount for KernelSU (4.14 required)
-        run: |
-          cd ${{ env.KERNEL_DIR }}
-
-          if ! grep -q "path_umount" fs/namespace.c; then
-            echo "Backporting path_umount for 4.14 kernel..."
-
-            python3 -c "import sys; lines = open('fs/namespace.c').readlines(); idx = next((i for i, l in enumerate(lines) if 'SYSCALL_DEFINE2(umount' in l), None); exit(1) if idx is None else None; code = 'static int can_umount(const struct path *path, int flags)\n{\n\tstruct mount *mnt = real_mount(path->mnt);\n\n\tif (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))\n\t\treturn -EINVAL;\n\tif (!may_mount())\n\t\treturn -EPERM;\n\tif (path->dentry != path->mnt->mnt_root)\n\t\treturn -EINVAL;\n\tif (!check_mnt(mnt))\n\t\treturn -EINVAL;\n\tif (mnt->mnt.mnt_flags & MNT_LOCKED)\n\t\treturn -EINVAL;\n\tif (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))\n\t\treturn -EPERM;\n\treturn 0;\n}\n\nint path_umount(struct path *path, int flags)\n{\n\tstruct mount *mnt = real_mount(path->mnt);\n\tint ret;\n\n\tret = can_umount(path, flags);\n\tif (!ret)\n\t\tret = do_umount(mnt, flags);\n\n\t/* we must not call path_put() as that would clear mnt_expiry_mark */\n\tdput(path->dentry);\n\tmntput_no_expire(mnt);\n\treturn ret;\n}\n\n'; lines.insert(idx, code); open('fs/namespace.c', 'w').writelines(lines); print('path_umount backported successfully')"
+          if [ -x scripts/config ]; then
+            scripts/config --file "${cfg}" --set-str DEFAULT_SECURITY selinux || true
           else
-            echo "path_umount already exists, skipping backport"
+            sed -i '/^CONFIG_DEFAULT_SECURITY=/d' "${cfg}"
+            echo 'CONFIG_DEFAULT_SECURITY="selinux"' >> "${cfg}"
           fi
 
-      - name: Apply DroidSpaces Kernel Config
+          make O="${OUT_DIR}" ARCH=arm64 olddefconfig
+
+          grep -E 'CONFIG_(SECURITY|SECURITY_SELINUX|KSU)=' "${cfg}" || true
+          grep -q '^CONFIG_SECURITY=y' "${cfg}"
+          grep -q '^CONFIG_SECURITY_SELINUX=y' "${cfg}"
+
+      - name: Build kernel
+        working-directory: kernel
         run: |
-          cd ${{ env.KERNEL_DIR }}
-
-          cat > droidspaces.config << 'EOF'
-          # ============================================================
-          # DroidSpaces Kernel Configuration for Non-GKI (Legacy) Kernels
-          # Device: Redmi K30 Ultra (cezanne)
-          # Kernel: 4.14
-          # ============================================================
-
-          # NO_HZ support (required for KernelSU on 4.14)
-          # CONFIG_HZ_PERIODIC is not set
-          CONFIG_NO_HZ_IDLE=y
-          CONFIG_NO_HZ_COMMON=y
-
-          # SELinux sidtab hash table (backported in cezanne-r-oss)
-          CONFIG_SECURITY_SELINUX_SIDTAB_HASH_BITS=9
-          CONFIG_SECURITY_SELINUX_SID2STR_CACHE_SIZE=256
-
-          # IPC mechanisms
-          CONFIG_SYSCTL=y
-          CONFIG_SYSVIPC=y
-          CONFIG_POSIX_MQUEUE=y
-
-          # Core namespace support
-          CONFIG_NAMESPACES=y
-          CONFIG_PID_NS=y
-          CONFIG_UTS_NS=y
-          CONFIG_IPC_NS=y
-
-          # Seccomp support
-          CONFIG_SECCOMP=y
-          CONFIG_SECCOMP_FILTER=y
-
-          # Control groups support
-          CONFIG_CGROUPS=y
-          CONFIG_CGROUP_DEVICE=y
-          CONFIG_CGROUP_PIDS=y
-          CONFIG_MEMCG=y
-          CONFIG_CGROUP_SCHED=y
-          CONFIG_FAIR_GROUP_SCHED=y
-          CONFIG_CGROUP_FREEZER=y
-          CONFIG_CGROUP_NET_PRIO=y
-
-          # Device filesystem support
-          CONFIG_DEVTMPFS=y
-          CONFIG_DEVTMPFS_MOUNT=y
-
-          # Overlay filesystem support (required for volatile mode)
-          CONFIG_OVERLAY_FS=y
-
-          # Enable xattr, posix acl support on tmpfs
-          CONFIG_TMPFS_POSIX_ACL=y
-          CONFIG_TMPFS_XATTR=y
-
-          # Firmware loading support
-          CONFIG_FW_LOADER=y
-          CONFIG_FW_LOADER_USER_HELPER=y
-          CONFIG_FW_LOADER_COMPRESS=y
-
-          # Droidspaces Network Isolation Support - NAT/none modes
-          CONFIG_NET_NS=y
-          CONFIG_VETH=y
-          CONFIG_BRIDGE=y
-          CONFIG_NETFILTER=y
-          CONFIG_BRIDGE_NETFILTER=y
-          CONFIG_NETFILTER_ADVANCED=y
-          CONFIG_NF_CONNTRACK=y
-          CONFIG_IP_NF_IPTABLES=y
-          CONFIG_IP_NF_FILTER=y
-          CONFIG_NF_NAT=y
-          CONFIG_NF_TABLES=y
-          CONFIG_IP_NF_TARGET_MASQUERADE=y
-          CONFIG_NETFILTER_XT_TARGET_MASQUERADE=y
-          CONFIG_NETFILTER_XT_TARGET_TCPMSS=y
-          CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
-          CONFIG_NF_CONNTRACK_NETLINK=y
-          CONFIG_NF_NAT_REDIRECT=y
-          CONFIG_IP_ADVANCED_ROUTER=y
-          CONFIG_IP_MULTIPLE_TABLES=y
-
-          # legacy compat for 4.14
-          CONFIG_NF_CONNTRACK_IPV4=y
-          CONFIG_NF_NAT_IPV4=y
-          CONFIG_IP_NF_NAT=y
-
-          # Disable ANDROID_PARANOID_NETWORK on older kernels to make internet work in containers
-          # CONFIG_ANDROID_PARANOID_NETWORK is not set
-
-          # Fix for docker unsafe procfs error
-          CONFIG_USER_NS=y
-
-          # PTY support
-          CONFIG_UNIX98_PTYS=y
-
-          # Loop device support
-          CONFIG_BLK_DEV_LOOP=y
-
-          # ext4 support
-          CONFIG_EXT4_FS=y
-
-          # KernelSU kprobe support (required for non-GKI)
-          CONFIG_KPROBES=y
-          CONFIG_HAVE_KPROBES=y
-          CONFIG_KPROBE_EVENTS=y
-          CONFIG_MODULES=y
-          EOF
-
-          cat droidspaces.config >> arch/arm64/configs/${{ env.KERNEL_CONFIG }}
-          echo "DroidSpaces config applied to ${{ env.KERNEL_CONFIG }}"
-
-      - name: Build Kernel
-        run: |
-          cd ${{ env.KERNEL_DIR }}
-
-          export PATH="${{ env.TOOLCHAIN_DIR }}/clang/bin:${{ env.TOOLCHAIN_DIR }}/gcc-aarch64/bin:${{ env.TOOLCHAIN_DIR }}/gcc-arm/bin:$PATH"
-
-          make O=out ARCH=${{ env.ARCH }} ${{ env.KERNEL_CONFIG }}
-
-          make O=out ARCH=${{ env.ARCH }} \
+          set -euo pipefail
+          export PATH="${GITHUB_WORKSPACE}/toolchains/clang/bin:${GITHUB_WORKSPACE}/toolchains/aarch64-linux-android-4.9/bin:${GITHUB_WORKSPACE}/toolchains/arm-linux-androideabi-4.9/bin:${PATH}"
+          export KBUILD_BUILD_USER=github
+          export KBUILD_BUILD_HOST=actions
+          make -j"$(nproc)" O="${OUT_DIR}" ARCH=arm64 \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-            -j$(nproc)
+            CROSS_COMPILE_ARM32=arm-linux-androideabi-
 
-      - name: Clone AnyKernel3
+      - name: Package with AnyKernel3
         run: |
-          git clone --depth=1 -b ${{ env.ANYKERNEL_BRANCH }} ${{ env.ANYKERNEL_URL }} anykernel
+          set -euo pipefail
+          wget -qO anykernel.tar.gz "https://github.com/osm0sis/AnyKernel3/archive/refs/heads/master.tar.gz"
+          mkdir -p AnyKernel3
+          tar -xf anykernel.tar.gz --strip-components=1 -C AnyKernel3
+          rm -rf AnyKernel3/.git* AnyKernel3/README.md
 
-      - name: Package Kernel with AnyKernel3
-        run: |
-          cd anykernel
-
-          cp ${{ env.KERNEL_DIR }}/out/arch/arm64/boot/${{ env.IMAGE_NAME }} .
-
-          sed -i 's/do.devicecheck=1/do.devicecheck=1/' anykernel.sh
-          sed -i 's/device.name1=.*/device.name1=cezanne/' anykernel.sh
-          sed -i 's/device.name2=.*/device.name2=cezanne/' anykernel.sh
-
-          if ! grep -q "device.name1=cezanne" anykernel.sh; then
-            echo "device.name1=cezanne" >> anykernel.sh
-            echo "device.name2=cezanne" >> anykernel.sh
+          image="kernel/${OUT_DIR}/arch/arm64/boot/Image.gz-dtb"
+          if [ ! -f "${image}" ]; then
+            image="kernel/${OUT_DIR}/arch/arm64/boot/Image.gz"
           fi
+          if [ ! -f "${image}" ]; then
+            image="kernel/${OUT_DIR}/arch/arm64/boot/Image"
+          fi
+          cp "${image}" AnyKernel3/
 
-          zip -r9 K30Ultra-DroidSpaces-KernelSU.zip * -x .git -x README.md -x LICENSE
+          sed -i 's/^device.name1=.*/device.name1=cezanne/' AnyKernel3/anykernel.sh || true
+          sed -i 's/^device.name2=.*/device.name2=Redmi K30 Ultra/' AnyKernel3/anykernel.sh || true
+          sed -i 's/^supported.versions=.*/supported.versions=11/' AnyKernel3/anykernel.sh || true
 
-      - name: Upload Build Artifact
+          cd AnyKernel3
+          zip -r9 "../K30Ultra-DroidSpaces-KernelSU.zip" ./*
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: K30Ultra-DroidSpaces-KernelSU
-          path: anykernel/K30Ultra-DroidSpaces-KernelSU.zip
+          path: K30Ultra-DroidSpaces-KernelSU.zip
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+      - name: Publish release
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: K30Ultra-DroidSpaces-${{ github.run_number }}
-          name: K30 Ultra DroidSpaces + KernelSU Build #${{ github.run_number }}
-          body: |
-            ## K30 Ultra (cezanne) Kernel with DroidSpaces + KernelSU
-
-            - **Device:** Redmi K30 Ultra (cezanne)
-            - **Kernel Version:** 4.14
-            - **Android Version:** Android 11 (MIUI 12.5)
-            - **KernelSU Variant:** ${{ inputs.kernelsu_variant }}
-            - **KernelSU Ref:** ${{ inputs.kernelsu_ref }}
-            - **DroidSpaces:** Enabled (Full namespace + network isolation support)
-
-            ### Features
-            - Full Linux namespace support (PID, MNT, UTS, IPC, NET, USER, CGROUP)
-            - Cgroups v1 support
-            - OverlayFS support (volatile mode)
-            - Network isolation (NAT / None modes)
-            - KernelSU root support (kprobe mode for non-GKI)
-            - path_umount backported for KernelSU module unmount
-
-            ### Flashing Instructions
-            1. Boot to Recovery (TWRP / OrangeFox recommended)
-            2. Flash the zip file
-            3. Reboot
-            4. Install DroidSpaces APK and run requirements check (`su -c droidspaces check`)
-
-            ### Warning
-            - Always backup your current boot partition before flashing!
-            - This is an experimental build. Use at your own risk.
-          files: anykernel/K30Ultra-DroidSpaces-KernelSU.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: k30ultra-droidspaces-${{ github.run_number }}
+          name: K30 Ultra DroidSpaces KernelSU ${{ github.run_number }}
+          files: K30Ultra-DroidSpaces-KernelSU.zip
+          prerelease: true
