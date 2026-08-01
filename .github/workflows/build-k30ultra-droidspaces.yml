@@ -337,6 +337,24 @@ jobs:
             grep -RIl "MODULE_IMPORT_NS(" drivers/kernelsu | xargs -r sed -i '/MODULE_IMPORT_NS(/d'
           fi
 
+          if [ ! -f include/linux/pgtable.h ]; then
+            python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("include/linux/pgtable.h")
+          path.write_text("""/* SPDX-License-Identifier: GPL-2.0 */
+          #ifndef _LINUX_PGTABLE_H
+          #define _LINUX_PGTABLE_H
+
+          #include <asm/pgtable.h>
+
+          #endif /* _LINUX_PGTABLE_H */
+          """)
+          PY
+          fi
+
+          ls -l include/linux/pgtable.h
+
           if [ -f drivers/kernelsu/hook/syscall_hook.h ] && \
              ! grep -q "KSU_414_SYSCALL_FN_T_COMPAT" drivers/kernelsu/hook/syscall_hook.h; then
             python3 - <<'PY'
