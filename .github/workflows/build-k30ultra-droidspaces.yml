@@ -654,13 +654,14 @@ jobs:
             CROSS_COMPILE=aarch64-linux-android- \
             CROSS_COMPILE_ARM32=arm-linux-androideabi-
 
-          grep -E 'CONFIG_(SECURITY|SECURITY_SELINUX|KSU|KPROBES)=' "${cfg}" || true
-          grep -q '^CONFIG_AUDIT=y' "${cfg}"
-          grep -q '^CONFIG_NET=y' "${cfg}"
-          grep -q '^CONFIG_INET=y' "${cfg}"
+          grep -E 'CONFIG_(AUDIT|NET|INET|SECURITY|SECURITY_SELINUX|KSU|KPROBES)=' "${cfg}" || true
           grep -q '^CONFIG_SECURITY=y' "${cfg}"
           grep -q '^CONFIG_SECURITY_SELINUX=y' "${cfg}"
-          grep -q '^CONFIG_KSU_KPROBES_HOOK=y' "${cfg}"
+          grep -q '^CONFIG_KSU=y' "${cfg}"
+          grep -q '^CONFIG_KPROBES=y' "${cfg}"
+          if grep -R "KSU_KPROBES_HOOK" -n drivers/kernelsu KernelSU-Next KernelSU >/dev/null 2>&1; then
+            grep -q '^CONFIG_KSU_KPROBES_HOOK=y' "${cfg}"
+          fi
           ! grep -q '^CONFIG_ANDROID_PARANOID_NETWORK=y' "${cfg}"
 
       - name: Build kernel
