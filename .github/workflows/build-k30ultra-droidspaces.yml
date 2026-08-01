@@ -445,7 +445,7 @@ jobs:
 
           for opt in \
             IKCONFIG IKCONFIG_PROC MODULES KALLSYMS KALLSYMS_ALL \
-            KSU KSU_KPROBE_HOOKS KPROBES HAVE_KPROBES KPROBE_EVENTS TRACEPOINTS \
+            KSU KSU_KPROBES_HOOK KSU_KPROBE_HOOKS KPROBES HAVE_KPROBES KPROBE_EVENTS TRACEPOINTS \
             AUDIT SECURITY SECURITYFS SECURITY_NETWORK SECURITY_PATH \
             SECURITY_SELINUX SECURITY_SELINUX_AVC_STATS DEFAULT_SECURITY_SELINUX \
             NO_HZ_COMMON \
@@ -465,6 +465,7 @@ jobs:
           cfg_unset SECURITY_SELINUX_DISABLE
           cfg_unset SECURITY_SELINUX_BOOTPARAM
           cfg_unset DEFAULT_SECURITY_DAC
+          cfg_unset KSU_MANUAL_HOOK
 
           if [ "${ENABLE_SUSFS}" != "true" ]; then
             cfg_unset KSU_SUSFS
@@ -505,12 +506,13 @@ jobs:
             CROSS_COMPILE=aarch64-linux-android- \
             CROSS_COMPILE_ARM32=arm-linux-androideabi-
 
-          grep -E 'CONFIG_(SECURITY|SECURITY_SELINUX|KSU)=' "${cfg}" || true
+          grep -E 'CONFIG_(SECURITY|SECURITY_SELINUX|KSU|KPROBES)=' "${cfg}" || true
           grep -q '^CONFIG_AUDIT=y' "${cfg}"
           grep -q '^CONFIG_NET=y' "${cfg}"
           grep -q '^CONFIG_INET=y' "${cfg}"
           grep -q '^CONFIG_SECURITY=y' "${cfg}"
           grep -q '^CONFIG_SECURITY_SELINUX=y' "${cfg}"
+          grep -q '^CONFIG_KSU_KPROBES_HOOK=y' "${cfg}"
 
       - name: Build kernel
         working-directory: kernel
