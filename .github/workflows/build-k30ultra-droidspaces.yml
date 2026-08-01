@@ -546,6 +546,31 @@ jobs:
               drivers/kernelsu/allowlist.c || true
           fi
 
+          if [ -f include/linux/seccomp.h ]; then
+            python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("include/linux/seccomp.h")
+          text = path.read_text()
+
+          if "atomic_t filter_count;" not in text:
+              if "#include <linux/atomic.h>" not in text:
+                  text = text.replace(
+                      "#include <linux/thread_info.h>\n",
+                      "#include <linux/thread_info.h>\n#include <linux/atomic.h>\n",
+                      1,
+                  )
+              text = text.replace(
+                  "struct seccomp {\n\tint mode;\n",
+                  "struct seccomp {\n\tint mode;\n\tatomic_t filter_count;\n",
+                  1,
+              )
+
+          path.write_text(text)
+          PY
+            grep -n "atomic.h\\|filter_count" include/linux/seccomp.h || true
+          fi
+
           if [ -f drivers/kernelsu/hook/syscall_hook.h ] && \
              ! grep -q "KSU_414_SYSCALL_FN_T_COMPAT" drivers/kernelsu/hook/syscall_hook.h; then
             python3 - <<'PY'
@@ -621,6 +646,7 @@ jobs:
           for opt in \
             IKCONFIG IKCONFIG_PROC MODULES KALLSYMS KALLSYMS_ALL \
             KSU KSU_KPROBES_HOOK KSU_KPROBE_HOOKS KPROBES HAVE_KPROBES KPROBE_EVENTS TRACEPOINTS \
+            SECCOMP SECCOMP_FILTER \
             AUDIT SECURITY SECURITYFS SECURITY_NETWORK SECURITY_PATH \
             SECURITY_SELINUX SECURITY_SELINUX_AVC_STATS DEFAULT_SECURITY_SELINUX \
             NO_HZ_COMMON \
@@ -681,11 +707,12 @@ jobs:
             CROSS_COMPILE=aarch64-linux-android- \
             CROSS_COMPILE_ARM32=arm-linux-androideabi-
 
-          grep -E 'CONFIG_(AUDIT|NET|INET|SECURITY|SECURITY_SELINUX|KSU|KPROBES)=' "${cfg}" || true
+          grep -E 'CONFIG_(AUDIT|NET|INET|SECURITY|SECURITY_SELINUX|SECCOMP|KSU|KPROBES)=' "${cfg}" || true
           grep -q '^CONFIG_SECURITY=y' "${cfg}"
           grep -q '^CONFIG_SECURITY_SELINUX=y' "${cfg}"
           grep -q '^CONFIG_KSU=y' "${cfg}"
           grep -q '^CONFIG_KPROBES=y' "${cfg}"
+          grep -q '^CONFIG_SECCOMP=y' "${cfg}"
           if grep -R "KSU_KPROBES_HOOK" -n drivers/kernelsu KernelSU-Next KernelSU >/dev/null 2>&1; then
             grep -q '^CONFIG_KSU_KPROBES_HOOK=y' "${cfg}"
           fi
@@ -756,6 +783,7 @@ jobs:
             kernel/out/.config
             kernel/out/include/generated/autoconf.h
             kernel/include/linux/pgtable.h
+            kernel/include/linux/seccomp.h
             kernel/drivers/kernelsu/Kbuild
             kernel/drivers/kernelsu/Makefile
             kernel/drivers/kernelsu/compat/kernel_compat.h
