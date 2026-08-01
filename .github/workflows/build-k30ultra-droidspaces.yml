@@ -571,6 +571,39 @@ jobs:
             grep -n "atomic.h\\|filter_count" include/linux/seccomp.h || true
           fi
 
+          if [ -f drivers/kernelsu/sucompat.c ]; then
+            python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("drivers/kernelsu/sucompat.c")
+          text = path.read_text()
+
+          compat = """
+          #ifndef KSU_414_USERCOPY_NOFAULT_LOCAL_COMPAT
+          #define KSU_414_USERCOPY_NOFAULT_LOCAL_COMPAT
+          #include <linux/uaccess.h>
+          #define strncpy_from_user_nofault(dst, src, count) \\
+          	strncpy_from_user((dst), (const char __user *)(src), (count))
+          #endif
+
+          """
+
+          if "KSU_414_USERCOPY_NOFAULT_LOCAL_COMPAT" not in text:
+              if "#include " in text:
+                  lines = text.splitlines(keepends=True)
+                  insert_at = 0
+                  for index, line in enumerate(lines):
+                      if line.startswith("#include "):
+                          insert_at = index + 1
+                  text = "".join(lines[:insert_at]) + compat + "".join(lines[insert_at:])
+              else:
+                  text = compat + text
+              path.write_text(text)
+          PY
+            grep -n "KSU_414_USERCOPY_NOFAULT_LOCAL_COMPAT\\|strncpy_from_user_nofault" \
+              drivers/kernelsu/sucompat.c || true
+          fi
+
           if [ -f drivers/kernelsu/hook/syscall_hook.h ] && \
              ! grep -q "KSU_414_SYSCALL_FN_T_COMPAT" drivers/kernelsu/hook/syscall_hook.h; then
             python3 - <<'PY'
@@ -789,6 +822,7 @@ jobs:
             kernel/drivers/kernelsu/compat/kernel_compat.h
             kernel/drivers/kernelsu/compat/kernel_compat.c
             kernel/drivers/kernelsu/hook/syscall_hook.h
+            kernel/drivers/kernelsu/sucompat.c
             kernel/drivers/kernelsu/feature/sucompat.c
             kernel/fs/internal.h
             kernel/fs/namespace.c
