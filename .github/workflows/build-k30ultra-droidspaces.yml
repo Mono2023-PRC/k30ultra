@@ -40,6 +40,7 @@ env:
   OUT_DIR: out
   CLANG_VERSION: clang-r416183b
   DOWNLOAD_CACHE_DIR: .cache/downloads
+  TOOLCHAIN_PATH: toolchains/clang/bin:toolchains/aarch64-linux-android-4.9/bin:toolchains/arm-linux-androideabi-4.9/bin
 
 jobs:
   build:
@@ -185,10 +186,47 @@ jobs:
             tar -xf "${arm_gcc_tar}" -C toolchains/arm-linux-androideabi-4.9
           fi
 
+      - name: Normalize Android toolchain layout
+        run: |
+          set -euo pipefail
+
+          normalize_gcc() {
+            local root="$1"
+            local prefix="$2"
+            local expected="${root}/bin/${prefix}-gcc"
+
+            if [ -x "${expected}" ]; then
+              return
+            fi
+
+            local found
+            found="$(find "${root}" -type f -name "${prefix}-gcc" -perm -111 | head -n 1 || true)"
+            if [ -z "${found}" ]; then
+              echo "Cannot find ${prefix}-gcc under ${root}."
+              find "${root}" -maxdepth 4 -type f -name '*gcc*' -print || true
+              exit 1
+            fi
+
+            mkdir -p "${root}/bin"
+            ln -sf "$(realpath "${found}")" "${expected}"
+
+            local found_dir
+            found_dir="$(dirname "${found}")"
+            while IFS= read -r tool; do
+              ln -sf "$(realpath "${tool}")" "${root}/bin/$(basename "${tool}")"
+            done < <(find "${found_dir}" -maxdepth 1 -type f -perm -111 -name "${prefix}-*")
+          }
+
+          normalize_gcc toolchains/aarch64-linux-android-4.9 aarch64-linux-android
+          normalize_gcc toolchains/arm-linux-androideabi-4.9 arm-linux-androideabi
+
+          ls -l toolchains/aarch64-linux-android-4.9/bin/aarch64-linux-android-gcc
+          ls -l toolchains/arm-linux-androideabi-4.9/bin/arm-linux-androideabi-gcc
+
       - name: Verify toolchains
         run: |
           set -euo pipefail
-          export PATH="${GITHUB_WORKSPACE}/toolchains/clang/bin:${GITHUB_WORKSPACE}/toolchains/aarch64-linux-android-4.9/bin:${GITHUB_WORKSPACE}/toolchains/arm-linux-androideabi-4.9/bin:${PATH}"
+          export PATH="${GITHUB_WORKSPACE}/${TOOLCHAIN_PATH//:/:${GITHUB_WORKSPACE}/}:${PATH}"
           clang --version | head -n 1
           ld.lld --version | head -n 1
           aarch64-linux-android-gcc --version | head -n 1
@@ -514,7 +552,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          export PATH="${GITHUB_WORKSPACE}/toolchains/clang/bin:${GITHUB_WORKSPACE}/toolchains/aarch64-linux-android-4.9/bin:${GITHUB_WORKSPACE}/toolchains/arm-linux-androideabi-4.9/bin:${PATH}"
+          export PATH="${GITHUB_WORKSPACE}/${TOOLCHAIN_PATH//:/:${GITHUB_WORKSPACE}/}:${PATH}"
           if [ ! -f "arch/arm64/configs/${DEFCONFIG}" ]; then
             if [ -f arch/arm64/configs/cezanne_user_defconfig ]; then
               DEFCONFIG=cezanne_user_defconfig
@@ -623,7 +661,7 @@ jobs:
         working-directory: kernel
         run: |
           set -euo pipefail
-          export PATH="${GITHUB_WORKSPACE}/toolchains/clang/bin:${GITHUB_WORKSPACE}/toolchains/aarch64-linux-android-4.9/bin:${GITHUB_WORKSPACE}/toolchains/arm-linux-androideabi-4.9/bin:${PATH}"
+          export PATH="${GITHUB_WORKSPACE}/${TOOLCHAIN_PATH//:/:${GITHUB_WORKSPACE}/}:${PATH}"
           export KBUILD_BUILD_USER=github
           export KBUILD_BUILD_HOST=actions
           make -j"$(nproc)" O="${OUT_DIR}" ARCH=arm64 \
