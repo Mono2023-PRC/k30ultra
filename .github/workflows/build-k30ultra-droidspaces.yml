@@ -193,6 +193,7 @@ jobs:
           normalize_gcc() {
             local root="$1"
             local prefix="$2"
+            local target="$3"
             local expected="${root}/bin/${prefix}-gcc"
 
             if [ -x "${expected}" ]; then
@@ -202,9 +203,14 @@ jobs:
             local found
             found="$(find "${root}" -type f -name "${prefix}-gcc" -perm -111 | head -n 1 || true)"
             if [ -z "${found}" ]; then
-              echo "Cannot find ${prefix}-gcc under ${root}."
-              find "${root}" -maxdepth 4 -type f -name '*gcc*' -print || true
-              exit 1
+              echo "Cannot find ${prefix}-gcc under ${root}; creating clang compatibility wrapper."
+              mkdir -p "${root}/bin"
+              printf '%s\n' \
+                '#!/usr/bin/env bash' \
+                "exec clang --target=${target} \"\$@\"" \
+                > "${expected}"
+              chmod +x "${expected}"
+              return
             fi
 
             mkdir -p "${root}/bin"
@@ -217,8 +223,8 @@ jobs:
             done < <(find "${found_dir}" -maxdepth 1 -type f -perm -111 -name "${prefix}-*")
           }
 
-          normalize_gcc toolchains/aarch64-linux-android-4.9 aarch64-linux-android
-          normalize_gcc toolchains/arm-linux-androideabi-4.9 arm-linux-androideabi
+          normalize_gcc toolchains/aarch64-linux-android-4.9 aarch64-linux-android aarch64-linux-android
+          normalize_gcc toolchains/arm-linux-androideabi-4.9 arm-linux-androideabi arm-linux-androideabi
 
           ls -l toolchains/aarch64-linux-android-4.9/bin/aarch64-linux-android-gcc
           ls -l toolchains/arm-linux-androideabi-4.9/bin/arm-linux-androideabi-gcc
