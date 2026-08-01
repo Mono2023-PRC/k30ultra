@@ -6,16 +6,16 @@ on:
       kernelsu_variant:
         description: KernelSU variant
         required: true
-        default: kernelsu
+        default: kernelsu-next
         type: choice
         options:
-          - kernelsu
           - kernelsu-next
+          - kernelsu
           - sukisu-ultra
       kernelsu_ref:
-        description: KernelSU branch or tag; KernelSU Next 4.14 normally uses legacy
+        description: KernelSU branch, tag, or commit; use legacy for KernelSU Next v3.0.0 legacy manager
         required: true
-        default: main
+        default: legacy
         type: string
       enable_susfs:
         description: Enable SUSFS patches (not recommended for DroidSpaces)
@@ -325,6 +325,10 @@ jobs:
           if [ "${KSU_VARIANT}" = "kernelsu-next" ] && [ "${setup_ref}" = "main" ]; then
             setup_ref="legacy"
           fi
+          if [ "${KSU_VARIANT}" = "kernelsu-next" ]; then
+            echo "Using KernelSU Next ref: ${setup_ref}"
+            echo "This is intended for KernelSU Next legacy managers such as v3.0.0-30-legacy."
+          fi
 
           curl -LSs "${setup_url}" | bash -s "${setup_ref}"
 
@@ -354,6 +358,18 @@ jobs:
           fi
 
           ls -l include/linux/pgtable.h
+
+          if grep -R "strncpy_from_user_nofault" -n drivers/kernelsu >/dev/null 2>&1; then
+            grep -RIl "strncpy_from_user_nofault" drivers/kernelsu | \
+              xargs -r sed -i 's/strncpy_from_user_nofault/strncpy_from_user/g'
+          fi
+
+          if grep -R "ksys_close" -n drivers/kernelsu >/dev/null 2>&1; then
+            grep -RIl "ksys_close" drivers/kernelsu | \
+              xargs -r sed -i 's/ksys_close/sys_close/g'
+          fi
+
+          ! grep -R "strncpy_from_user_nofault\\|ksys_close" -n drivers/kernelsu
 
           if [ -f drivers/kernelsu/hook/syscall_hook.h ] && \
              ! grep -q "KSU_414_SYSCALL_FN_T_COMPAT" drivers/kernelsu/hook/syscall_hook.h; then
