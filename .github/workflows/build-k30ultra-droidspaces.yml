@@ -152,9 +152,40 @@ jobs:
             wget -qO security/selinux/include/initial_sid_to_string.h \
               "https://raw.githubusercontent.com/torvalds/linux/v5.4/security/selinux/include/initial_sid_to_string.h"
           fi
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("security/selinux/include/classmap.h")
+          text = path.read_text()
+
+          text = text.replace("#include <linux/capability.h>\n#include <linux/socket.h>\n\n", "")
+          text = text.replace(
+              "#if CAP_LAST_CAP > CAP_CHECKPOINT_RESTORE\n"
+              "#error New capability defined, please update COMMON_CAP2_PERMS.\n"
+              "#endif\n\n",
+              "",
+          )
+          text = text.replace(
+              "#if PF_MAX > 46\n"
+              "#error New address family defined, please update secclass_map.\n"
+              "#endif\n",
+              "#ifdef __KERNEL__\n"
+              "#include <linux/capability.h>\n"
+              "#if CAP_LAST_CAP > CAP_CHECKPOINT_RESTORE\n"
+              "#error New capability defined, please update COMMON_CAP2_PERMS.\n"
+              "#endif\n"
+              "#include <linux/socket.h>\n"
+              "#if PF_MAX > 46\n"
+              "#error New address family defined, please update secclass_map.\n"
+              "#endif\n"
+              "#endif\n",
+          )
+
+          path.write_text(text)
+          PY
 
           if [ ! -s security/selinux/include/flask.h ] || [ ! -s security/selinux/include/av_permissions.h ]; then
-            gcc -Isecurity/selinux/include -Iinclude \
+            gcc -Isecurity/selinux/include \
               scripts/selinux/genheaders/genheaders.c \
               -o /tmp/selinux-genheaders
             /tmp/selinux-genheaders \
